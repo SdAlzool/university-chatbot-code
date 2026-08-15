@@ -6,6 +6,7 @@ import time
 from telegram.ext import CallbackQueryHandler, CommandHandler, ConversationHandler, MessageHandler, filters
 from config import db
 from database import get_instructor_by_chat_id, get_student_by_chat_id
+from utils import send_otp_email
 
 ASK_ID, ASK_OTP = range(2)
 _pending_otp = {}
@@ -37,6 +38,11 @@ async def login_ask_id(update, context):
     code = str(random.randint(100000, 999999))
     _pending_otp[update.effective_chat.id] = {"code": code, "user_id": user_id, "role": role, "expires": time.time() + 300}
     await update.message.reply_text(f"رمز التحقق الخاص بك هو: {code}\nصالح لمدة 5 دقائق. اكتبه هنا:")
+    if data.get("email"):
+        try:
+            await asyncio.to_thread(send_otp_email, data["email"], code)
+        except Exception:
+            logging.exception("Unable to send OTP email (code already sent in chat)")
     return ASK_OTP
 
 async def login_ask_otp(update, context):

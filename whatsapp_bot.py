@@ -29,7 +29,7 @@ from github_utils import (
     list_course_files_with_sha, github_upload_file, github_delete_file,
     download_file_bytes, slugify_course_name,
 )
-from utils import extract_pdf_text
+from utils import send_otp_email, extract_pdf_text
 from handlers.admin import is_stored_admin
 from handlers.courses import _all_courses
 from handlers.general import _handle_admin_command
@@ -282,6 +282,11 @@ async def handle_login_id(phone, user_id):
     state["data"] = {"code": code, "user_id": user_id, "role": role, "expires": time.time() + 300}
     state["state"] = "LOGIN_ASK_OTP"
     send_text(phone, f"رمز التحقق الخاص بك هو: {code}\nصالح لمدة 5 دقائق. اكتبه هنا:")
+    if data.get("email"):
+        try:
+            await asyncio.to_thread(send_otp_email, data["email"], code)
+        except Exception:
+            logging.exception("Unable to send OTP email (code already sent in chat)")
 
 
 async def handle_login_otp(phone, otp):
