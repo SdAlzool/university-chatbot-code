@@ -1,16 +1,29 @@
 import asyncio
 import logging
+import math
+import re
+import time
 from google.genai import types
 from config import client, MODEL_NAME, INTENT_MODEL_NAME
 from database import get_knowledge_base_text, get_student_by_chat_id
+
+_quota_cooldown_until = 0.0
+
+
+def _is_daily_quota_error(e):
+    msg = str(e)
+    return "429" in msg or "RESOURCE_EXHAUSTED" in msg
+
 
 async def call_gemini_with_retry(func, *args, max_retries=3, **kwargs):
     for attempt in range(max_retries):
         try:
             return await asyncio.to_thread(func, *args, **kwargs)
         except Exception as e:
-            is_rate_limit = "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
-            if is_rate_limit and attempt < max_retries - 1:
+            msg = str(e)
+            is_rate_limit = "429" in msg or "RESOURCE_EXHAUSTED" in msg
+            is_daily_quota = "quota" in msg.lower() or "free_tier" in msg.lower()
+            if is_rate_limit and not is_daily_quota and attempt < max_retries - 1:
                 wait_time = (attempt + 1) * 10
                 logging.warning(f"تجاوز حدود الاستخدام (429). جاري الانتظار {wait_time} ثانية...")
                 await asyncio.sleep(wait_time)
@@ -101,12 +114,19 @@ def build_system_instruction(knowledge_text, student_data=None, instructor_data=
 """
 
 async def generate_answer(user_message, chat_id, instructor_data=None):
-    knowledge_text = await asyncio.to_thread(get_knowledge_base_text)
+    global _quota_cooldown_until
+    try:
+        knowledge_text = await asyncio.to_thread(get_knowledge_base_text)
+    except Exception as e:
+        logging.error(f"KB load error: {e}")
+        knowledge_text = ""
     student_data = None
     if not instructor_data:
         _, student_data = await asyncio.to_thread(get_student_by_chat_id, chat_id)
     system_instruction = build_system_instruction(knowledge_text, student_data, instructor_data)
     try:
+        if time.time() < _quota_cooldown_until:
+            raise RuntimeError("Gemini quota exhausted (cooldown)")
         response = await call_gemini_with_retry(
             client.models.generate_content,
             model=MODEL_NAME,
@@ -116,4 +136,88 @@ async def generate_answer(user_message, chat_id, instructor_data=None):
         return response.text
     except Exception as e:
         logging.error(f"Gemini error: {e}")
+        if _is_daily_quota_error(e):
+            _quota_cooldown_until = time.time() + 600
+        fallback = await asyncio.to_thread(fallback_kb_answer, user_message)
+        if fallback:
+            return fallback
         return "معليش، حصل خطأ تقني. جرب تاني بعد شوية."
+
+_AR_STOPWORDS = {
+    "شنو", "شو", "ايه", "اي", "ما", "ماهي", "ماهو", "هل", "في", "وين", "كيف", "ليش",
+    "علشان", "عشان", "انا", "انتو", "اني", "انت", "عايز", "عايزة", "بغيت", "اريد",
+    "ابغى", "بس", "برضو", "لو", "اذا", "ال", "دي", "ده", "ديه", "كده", "كدا", "دا",
+    "من", "عن", "مع", "على", "علي", "اللي", "بتاع", "بتاعة", "ديل", "هذه", "هذا",
+    "ذلك", "كان", "كانت", "يكون", "يعني", "زاتو", "مش", "مو", "ولا", "محتاج", "تاني",
+    "اكتر", "أكتر", "قعد", "قال", "فيني", "تتكلم", "جاوب", "جواب", "عندك", "عندي",
+    "كم", "متي", "اين", "هي", "هو", "هم", "هن", "ان", "و", "ل", "كن", "هنا", "بعد",
+    "قبل", "كل", "جميع", "بعض", "تقريبا", "دلوقتي", "حاجة", "شئ", "شي", "شيء",
+    "المعلومات", "معلومات", "تحب", "تعرف", "اريد", "نريد", "ايهم", "ايش", "منو",
+}
+
+
+def _norm_ar(text):
+    text = text.lower()
+    for a, b in (("أ", "ا"), ("إ", "ا"), ("آ", "ا"), ("ة", "ه"), ("ى", "ي"), ("ؤ", "و"), ("ئ", "ي")):
+        text = text.replace(a, b)
+    text = re.sub(r"[\u064b-\u0652\u0640]", "", text)
+    text = re.sub(r"\b(تاسست|انشيت|انشات|انشا)\b", "انشا", text)
+    return text
+
+
+def _tokens(text):
+    t = _norm_ar(text)
+    words = re.findall(r"[a-z0-9]+|[\u0621-\u064a]+", t)
+    return [w for w in words if len(w) >= 2 and w not in _AR_STOPWORDS]
+
+
+def fallback_kb_answer(question):
+    try:
+        kb = get_knowledge_base_text()
+    except Exception:
+        return None
+    parts = kb.split("\n- ")
+    if not parts or not parts[0].startswith("- "):
+        return None
+    tokens = list(dict.fromkeys(t for t in _tokens(question) if t not in _AR_STOPWORDS))
+    if not tokens:
+        return None
+    n = len(parts)
+    df = {t: sum(1 for p in parts if t in _norm_ar(p)) for t in tokens}
+    best_score, best = 0.0, None
+    for p in parts:
+        norm = _norm_ar(p)
+        score = 0.0
+        for t in tokens:
+            if t in norm:
+                idf = math.log((n + 1) / (df[t] + 1)) + 1.0
+                score += idf * 1.5 if t in norm[:80] else idf
+        if score > best_score:
+            best_score, best = score, p
+    if not best or best_score <= 0:
+        return None
+    best = _pick_best_section(best, tokens, n, df)
+    content = best.split(": ", 1)[1] if ": " in best else best
+    content = re.sub(r"\s+", " ", content).strip()
+    return content[:1000]
+
+
+def _pick_best_section(part, tokens, n, df):
+    starts = [(m.start(), m.end()) for m in re.finditer(r"(?m)^\d+\s*\.\s+", part)]
+    if len(starts) < 2:
+        return part
+    sections = []
+    for i, (s, _e) in enumerate(starts):
+        end = starts[i + 1][0] if i + 1 < len(starts) else len(part)
+        sections.append(part[s:end])
+    best_sub, best_score = part, 0.0
+    for sec in sections:
+        nsec = _norm_ar(sec)
+        score = 0.0
+        for t in tokens:
+            if t in nsec:
+                idf = math.log((n + 1) / (df[t] + 1)) + 1.0
+                score += idf * 1.5 if t in nsec[:80] else idf
+        if score > best_score:
+            best_score, best_sub = score, sec
+    return best_sub
