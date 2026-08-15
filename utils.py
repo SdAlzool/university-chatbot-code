@@ -9,10 +9,16 @@ def send_otp_email(to_email, otp_code):
     msg["Subject"] = "رمز تحقق - بوت خدمات الجامعة"
     msg["From"] = EMAIL_ADDRESS
     msg["To"] = to_email
-    with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as server:
+    server = smtplib.SMTP("smtp.gmail.com", 587, timeout=20)
+    try:
         server.starttls()
         server.login(EMAIL_ADDRESS, EMAIL_APP_PASSWORD)
         server.send_message(msg)
+    finally:
+        try:
+            server.quit()
+        except Exception:
+            server.close()
 
 def extract_pdf_text(pdf_bytes):
     pdf_file = io.BytesIO(pdf_bytes)
