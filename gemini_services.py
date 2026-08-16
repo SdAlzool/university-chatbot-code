@@ -8,6 +8,7 @@ from config import client, MODEL_NAME, INTENT_MODEL_NAME
 from database import get_knowledge_base_text, get_student_by_chat_id
 
 _quota_cooldown_until = 0.0
+_lite_cooldown_until = 0.0
 
 
 def _is_daily_quota_error(e):
@@ -114,7 +115,7 @@ def build_system_instruction(knowledge_text, student_data=None, instructor_data=
 """
 
 async def generate_answer(user_message, chat_id, instructor_data=None):
-    global _quota_cooldown_until
+    global _quota_cooldown_until, _lite_cooldown_until
     try:
         knowledge_text = await asyncio.to_thread(get_knowledge_base_text)
     except Exception as e:
@@ -124,24 +125,29 @@ async def generate_answer(user_message, chat_id, instructor_data=None):
     if not instructor_data:
         _, student_data = await asyncio.to_thread(get_student_by_chat_id, chat_id)
     system_instruction = build_system_instruction(knowledge_text, student_data, instructor_data)
-    try:
-        if time.time() < _quota_cooldown_until:
-            raise RuntimeError("Gemini quota exhausted (cooldown)")
-        response = await call_gemini_with_retry(
-            client.models.generate_content,
-            model=MODEL_NAME,
-            contents=user_message,
-            config=types.GenerateContentConfig(system_instruction=system_instruction),
-        )
-        return response.text
-    except Exception as e:
-        logging.error(f"Gemini error: {e}")
-        if _is_daily_quota_error(e):
-            _quota_cooldown_until = time.time() + 600
-        fallback = await asyncio.to_thread(fallback_kb_answer, user_message)
-        if fallback:
-            return fallback
-        return "معليش، حصل خطأ تقني. جرب تاني بعد شوية."
+    for model, is_lite in ((MODEL_NAME, False), (INTENT_MODEL_NAME, True)):
+        cooldown = _lite_cooldown_until if is_lite else _quota_cooldown_until
+        if time.time() < cooldown:
+            continue
+        try:
+            response = await call_gemini_with_retry(
+                client.models.generate_content,
+                model=model,
+                contents=user_message,
+                config=types.GenerateContentConfig(system_instruction=system_instruction),
+            )
+            return response.text
+        except Exception as e:
+            logging.error(f"Gemini ({model}) error: {e}")
+            if _is_daily_quota_error(e):
+                if is_lite:
+                    _lite_cooldown_until = time.time() + 600
+                else:
+                    _quota_cooldown_until = time.time() + 600
+    fallback = await asyncio.to_thread(fallback_kb_answer, user_message)
+    if fallback:
+        return fallback
+    return "معليش، حصل خطأ تقني. جرب تاني بعد شوية."
 
 _AR_STOPWORDS = {
     "شنو", "شو", "ايه", "اي", "ما", "ماهي", "ماهو", "هل", "في", "وين", "كيف", "ليش",
@@ -153,7 +159,16 @@ _AR_STOPWORDS = {
     "كم", "متي", "اين", "هي", "هو", "هم", "هن", "ان", "و", "ل", "كن", "هنا", "بعد",
     "قبل", "كل", "جميع", "بعض", "تقريبا", "دلوقتي", "حاجة", "شئ", "شي", "شيء",
     "المعلومات", "معلومات", "تحب", "تعرف", "اريد", "نريد", "ايهم", "ايش", "منو",
+    "مساء", "صباح", "سلام", "السلام", "عليكم", "مرحبا", "اهلا", "هلا", "هلو",
+    "طيب", "تمام", "ازيك", "اخبار", "عامل", "نورت", "اعرف", "معرفه", "عند",
+    "سمحت", "فضلك", "يا", "شكرا", "ممكن", "يالا", "مرحبين",
 }
+
+_GREETING_PAT = re.compile(r"\b(مساء|صباح|مرحبا|اهلا|هلا|هلو|مرحبتين|السلام|هاي|هيلو|hello|hi|hey)\b")
+
+_GENERIC_REPLY = "ممكن توضح سؤالك أكثر؟ تقدر تسألني عن كليات الجامعة، التسجيل، الرسوم، أو الامتحانات."
+_GREETING_REPLY = "أهلاً وسهلاً! كيف أقدر أساعدك؟ تقدر تسألني عن كليات الجامعة، التسجيل، الرسوم، أو مواعيد الامتحانات."
+_NO_INFO_REPLY = "المعلومة دي غير متوفرة في قاعدة المعرفة حالياً. تواصل مع الدعم الجامعي أو أعد صياغة السؤال."
 
 
 def _norm_ar(text):
@@ -165,13 +180,46 @@ def _norm_ar(text):
     return text
 
 
+def _canon(word):
+    w = word
+    if len(w) <= 3:
+        return w
+    if w.startswith("و"):
+        w = w[1:]
+    for p in ("وال", "بال", "كال", "لل", "ال"):
+        if w.startswith(p) and len(w) > len(p) + 1:
+            w = w[len(p):]
+            break
+    return w
+
+
+def _topic_of(norm_p):
+    t = norm_p[len("عربي: "):] if norm_p.startswith("عربي: ") else norm_p
+    colon = t.find(": ")
+    return t[:colon] if colon != -1 else t[:80]
+
+
+def _word_set(text):
+    return {_canon(w) for w in re.findall(r"[a-z0-9]+|[\u0621-\u064a]+", _norm_ar(text))}
+
+
 def _tokens(text):
-    t = _norm_ar(text)
-    words = re.findall(r"[a-z0-9]+|[\u0621-\u064a]+", t)
-    return [w for w in words if len(w) >= 2 and w not in _AR_STOPWORDS]
+    toks = []
+    for w in re.findall(r"[a-z0-9]+|[\u0621-\u064a]+", _norm_ar(text)):
+        if len(w) >= 2 and w not in _AR_STOPWORDS:
+            c = _canon(w)
+            if c and len(c) >= 2 and c not in _AR_STOPWORDS:
+                toks.append(c)
+    return list(dict.fromkeys(toks))
 
 
 def fallback_kb_answer(question):
+    norm = _norm_ar(question)
+    if _GREETING_PAT.search(norm) and len(_tokens(question)) <= 2:
+        return _GREETING_REPLY
+    tokens = _tokens(question)
+    if not tokens:
+        return _GENERIC_REPLY
     try:
         kb = get_knowledge_base_text()
     except Exception:
@@ -179,23 +227,31 @@ def fallback_kb_answer(question):
     parts = kb.split("\n- ")
     if not parts or not parts[0].startswith("- "):
         return None
-    tokens = list(dict.fromkeys(t for t in _tokens(question) if t not in _AR_STOPWORDS))
-    if not tokens:
-        return None
     n = len(parts)
-    df = {t: sum(1 for p in parts if t in _norm_ar(p)) for t in tokens}
+    df = {t: 0 for t in tokens}
+    for p in parts:
+        ws = _word_set(p)
+        for t in tokens:
+            if t in ws:
+                df[t] += 1
     best_score, best = 0.0, None
     for p in parts:
-        norm = _norm_ar(p)
+        norm_p = _norm_ar(p)
+        topic = _topic_of(norm_p)
+        topic_ws = _word_set(topic)
+        content_ws = _word_set(norm_p)
         score = 0.0
         for t in tokens:
-            if t in norm:
+            if t in content_ws:
                 idf = math.log((n + 1) / (df[t] + 1)) + 1.0
-                score += idf * 1.5 if t in norm[:80] else idf
+                score += idf * 1.25 if t in topic_ws else idf
         if score > best_score:
             best_score, best = score, p
     if not best or best_score <= 0:
         return None
+    matched = [t for t in tokens if t in _word_set(best)]
+    if not any(df[t] <= 12 for t in matched):
+        return _NO_INFO_REPLY
     best = _pick_best_section(best, tokens, n, df)
     content = best.split(": ", 1)[1] if ": " in best else best
     content = re.sub(r"\s+", " ", content).strip()
@@ -212,12 +268,8 @@ def _pick_best_section(part, tokens, n, df):
         sections.append(part[s:end])
     best_sub, best_score = part, 0.0
     for sec in sections:
-        nsec = _norm_ar(sec)
-        score = 0.0
-        for t in tokens:
-            if t in nsec:
-                idf = math.log((n + 1) / (df[t] + 1)) + 1.0
-                score += idf * 1.5 if t in nsec[:80] else idf
+        ws = _word_set(sec)
+        score = sum((math.log((n + 1) / (df[t] + 1)) + 1.0) for t in tokens if t in ws)
         if score > best_score:
             best_score, best_sub = score, sec
     return best_sub
