@@ -42,3 +42,15 @@ def get_student_by_chat_id(chat_id):
 
 def get_instructor_by_chat_id(chat_id):
     return _get_active_user("instructors", chat_id)
+
+def get_chat_language(chat_id):
+    doc = db.collection("preferences").document(str(chat_id)).get()
+    if doc.exists:
+        return doc.to_dict().get("language")
+    return None
+
+def set_chat_language(chat_id, language):
+    db.collection("preferences").document(str(chat_id)).set({
+        "chat_id": str(chat_id),
+        "language": language,
+    })

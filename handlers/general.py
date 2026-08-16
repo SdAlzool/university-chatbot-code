@@ -5,8 +5,11 @@ import re
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from google.genai import types
 from config import client, MODEL_NAME
-from database import get_instructor_by_chat_id, get_student_by_chat_id
-from gemini_services import call_gemini_with_retry, detect_user_intent, generate_answer
+from database import get_instructor_by_chat_id, get_student_by_chat_id, set_chat_language
+from gemini_services import (
+    call_gemini_with_retry, detect_user_intent, generate_answer,
+    parse_language_toggle, get_effective_language,
+)
 from .admin import (
     add_admin_by_id, list_admins, list_all_people, list_instructors,
     list_students, remove_admin_by_id, user_is_admin,
@@ -154,6 +157,17 @@ async def handle_message(update, context):
     if text.lower() in ("مساعدة", "help", "المساعدة", "الخدمات", "menu", "قائمة"):
         await update.message.reply_text(HELP_TEXT)
         return
+    lang_cmd = parse_language_toggle(text)
+    if lang_cmd:
+        if lang_cmd == "show":
+            await update.message.reply_text("اختر اللغة بكتابة English أو عربي\nChoose a language: type 'English' or 'عربي'")
+        elif lang_cmd == "en":
+            set_chat_language(str(chat_id), "en")
+            await update.message.reply_text("Done! I will now reply in English. Type 'عربي' to switch back.")
+        else:
+            set_chat_language(str(chat_id), "ar")
+            await update.message.reply_text("تم! الآن سأرد بالعربية. اكتب English للتبديل.")
+        return
     if await user_is_admin(update):
         if await _handle_admin_command(update, context, text):
             return
@@ -174,7 +188,8 @@ async def handle_message(update, context):
     elif intent == "DR_DELETE_CONTENT":
         await update.message.reply_text("لحذف ملف أو مادة استخدم الأمر /deletecontent")
     else:
-        await update.message.reply_text(await generate_answer(text, chat_id, instructor_data=instructor))
+        language = get_effective_language(str(chat_id), text)
+        await update.message.reply_text(await generate_answer(text, chat_id, instructor_data=instructor, language=language))
 
 
 async def handle_voice(update, context):
@@ -190,7 +205,8 @@ async def handle_voice(update, context):
         )
         text = response.text.strip()
         if text:
-            await update.message.reply_text(await generate_answer(text, update.effective_chat.id))
+            language = get_effective_language(str(update.effective_chat.id), text)
+            await update.message.reply_text(await generate_answer(text, update.effective_chat.id, language=language))
     except Exception:
         logging.exception("Voice processing failed")
         await update.message.reply_text("تعذرت معالجة الرسالة الصوتية.")

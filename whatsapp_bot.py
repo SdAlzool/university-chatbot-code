@@ -23,8 +23,11 @@ from config import (
     WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_VERIFY_TOKEN,
     WHATSAPP_API_VERSION, WHATSAPP_PORT, ADMIN_WHATSAPP_NUMBERS,
 )
-from database import get_student_by_chat_id, get_instructor_by_chat_id
-from gemini_services import call_gemini_with_retry, detect_user_intent, generate_answer
+from database import get_student_by_chat_id, get_instructor_by_chat_id, set_chat_language
+from gemini_services import (
+    call_gemini_with_retry, detect_user_intent, generate_answer,
+    parse_language_toggle, get_effective_language,
+)
 from github_utils import (
     list_course_files_with_sha, github_upload_file, github_delete_file,
     download_file_bytes, slugify_course_name,
@@ -641,6 +644,18 @@ async def handle_callback(phone, payload):
 
 
 async def route_text(phone, text):
+    lang_cmd = parse_language_toggle(text)
+    if lang_cmd:
+        if lang_cmd == "show":
+            send_text(phone, "اختر اللغة بكتابة English أو عربي\nChoose a language: type 'English' or 'عربي'")
+        elif lang_cmd == "en":
+            set_chat_language("wa:" + phone, "en")
+            send_text(phone, "Done! I will now reply in English. Type 'عربي' anytime to switch back.")
+        else:
+            set_chat_language("wa:" + phone, "ar")
+            send_text(phone, "تم! الآن سأرد عليك بالعربية. اكتب English في أي وقت للتبديل.")
+        return
+
     _, student = await asyncio.to_thread(get_student_by_chat_id, "wa:" + phone)
     instructor_id, instructor = await asyncio.to_thread(get_instructor_by_chat_id, "wa:" + phone)
     is_admin = wa_is_admin(phone)
@@ -701,7 +716,8 @@ async def route_text(phone, text):
         await wa_delete_start(phone)
         return
 
-    answer = await generate_answer(text, "wa:" + phone, instructor_data=instructor)
+    language = get_effective_language("wa:" + phone, text)
+    answer = await generate_answer(text, "wa:" + phone, instructor_data=instructor, language=language)
     send_text(phone, answer)
 
 

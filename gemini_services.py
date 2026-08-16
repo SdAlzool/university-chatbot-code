@@ -5,7 +5,7 @@ import re
 import time
 from google.genai import types
 from config import client, MODEL_NAME, INTENT_MODEL_NAME
-from database import get_knowledge_base_text, get_student_by_chat_id
+from database import get_knowledge_base_text, get_student_by_chat_id, get_chat_language
 
 _quota_cooldown_until = 0.0
 _lite_cooldown_until = 0.0
@@ -98,7 +98,20 @@ async def detect_user_intent(text: str, is_instructor: bool = False) -> str:
         logging.error(f"Intent Detection Error: {e}")
         return "GENERAL_QUERY"
 
-def build_system_instruction(knowledge_text, student_data=None, instructor_data=None):
+def build_system_instruction(knowledge_text, student_data=None, instructor_data=None, language="ar"):
+    if language == "en":
+        user_context = ""
+        if student_data:
+            user_context = f"\nThe student is logged in, name: {student_data.get('name','')}."
+        elif instructor_data:
+            user_context = f"\nThe user is a logged-in instructor, name: {instructor_data.get('name','')}."
+        return f"""
+You are a smart assistant for the University of Science and Technology (UST). Reply to students and faculty in English in a friendly, concise way.
+Use ONLY this information and never invent anything not present in it:
+{knowledge_text}
+{user_context}
+If the question is about something not in this information, politely say the information is not currently available and suggest contacting university support.
+"""
     user_context = ""
     if student_data:
         user_context = f"\nالطالب مسجل دخول، اسمه {student_data.get('name','')}."
@@ -114,7 +127,7 @@ def build_system_instruction(knowledge_text, student_data=None, instructor_data=
 دي غير متوفرة حالياً وينصح يتواصل مع الدعم الجامعي.
 """
 
-async def generate_answer(user_message, chat_id, instructor_data=None):
+async def generate_answer(user_message, chat_id, instructor_data=None, language="ar"):
     global _quota_cooldown_until, _lite_cooldown_until
     try:
         knowledge_text = await asyncio.to_thread(get_knowledge_base_text)
@@ -124,7 +137,7 @@ async def generate_answer(user_message, chat_id, instructor_data=None):
     student_data = None
     if not instructor_data:
         _, student_data = await asyncio.to_thread(get_student_by_chat_id, chat_id)
-    system_instruction = build_system_instruction(knowledge_text, student_data, instructor_data)
+    system_instruction = build_system_instruction(knowledge_text, student_data, instructor_data, language)
     for model, is_lite in ((MODEL_NAME, False), (INTENT_MODEL_NAME, True)):
         cooldown = _lite_cooldown_until if is_lite else _quota_cooldown_until
         if time.time() < cooldown:
@@ -144,10 +157,10 @@ async def generate_answer(user_message, chat_id, instructor_data=None):
                     _lite_cooldown_until = time.time() + 600
                 else:
                     _quota_cooldown_until = time.time() + 600
-    fallback = await asyncio.to_thread(fallback_kb_answer, user_message)
+    fallback = await asyncio.to_thread(fallback_kb_answer, user_message, language)
     if fallback:
         return fallback
-    return "معليش، حصل خطأ تقني. جرب تاني بعد شوية."
+    return _NO_INFO_REPLY_EN if language == "en" else "معليش، حصل خطأ تقني. جرب تاني بعد شوية."
 
 _AR_STOPWORDS = {
     "شنو", "شو", "ايه", "اي", "ما", "ماهي", "ماهو", "هل", "في", "وين", "كيف", "ليش",
@@ -164,11 +177,55 @@ _AR_STOPWORDS = {
     "سمحت", "فضلك", "يا", "شكرا", "ممكن", "يالا", "مرحبين",
 }
 
-_GREETING_PAT = re.compile(r"\b(مساء|صباح|مرحبا|اهلا|هلا|هلو|مرحبتين|السلام|هاي|هيلو|hello|hi|hey)\b")
+_GREETING_PAT = re.compile(r"\b(مساء|صباح|مرحبا|اهلا|هلا|هلو|مرحبتين|السلام|هاي|هيلو|hello|hi|hey|good\s?(evening|morning|afternoon|day))\b")
 
 _GENERIC_REPLY = "ممكن توضح سؤالك أكثر؟ تقدر تسألني عن كليات الجامعة، التسجيل، الرسوم، أو الامتحانات."
 _GREETING_REPLY = "أهلاً وسهلاً! كيف أقدر أساعدك؟ تقدر تسألني عن كليات الجامعة، التسجيل، الرسوم، أو مواعيد الامتحانات."
 _NO_INFO_REPLY = "المعلومة دي غير متوفرة في قاعدة المعرفة حالياً. تواصل مع الدعم الجامعي أو أعد صياغة السؤال."
+_GENERIC_REPLY_EN = "Could you clarify your question? You can ask about UST colleges, admission, tuition fees, or exams."
+_GREETING_REPLY_EN = "Hello! How can I help you? You can ask me about UST colleges, admission, tuition fees, or exams."
+_NO_INFO_REPLY_EN = "That information is not in the knowledge base right now. Please contact university support or rephrase your question."
+
+_EN_STOPWORDS = {
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "do", "does", "did",
+    "what", "which", "who", "whom", "where", "when", "why", "how", "of", "for", "to", "in",
+    "on", "at", "by", "with", "and", "or", "not", "you", "your", "yours", "i", "me", "my",
+    "we", "our", "us", "it", "its", "they", "them", "their", "he", "him", "she", "her",
+    "can", "could", "will", "would", "should", "shall", "please", "tell", "about",
+    "information", "info", "know", "want", "need", "have", "has", "had", "from", "this",
+    "that", "these", "those", "there", "here", "all", "any", "some", "one", "two", "just",
+}
+
+_AR_CHARS = re.compile(r"[\u0600-\u06FF]")
+
+
+def detect_text_language(text):
+    return "ar" if _AR_CHARS.search(text) else "en"
+
+
+def parse_language_toggle(text):
+    t = _norm_ar(text.lower())
+    words = set()
+    for w in re.findall(r"[a-z]+|[\u0621-\u064a]+", t):
+        c = _canon(w)
+        if c:
+            words.add(c)
+    if len(words) > 5:
+        return None
+    if words & {"english", "eng", "انجليزي", "انجليزيه", "انكليزي", "انكليزيه"}:
+        return "en"
+    if words & {"عربي", "عربيه", "arabic"}:
+        return "ar"
+    if words & {"لغه", "language", "lang"}:
+        return "show"
+    return None
+
+
+def get_effective_language(chat_id, text):
+    stored = get_chat_language(chat_id)
+    if stored in ("ar", "en"):
+        return stored
+    return detect_text_language(text)
 
 
 def _norm_ar(text):
@@ -180,17 +237,31 @@ def _norm_ar(text):
     return text
 
 
+_EN_SYN = {
+    "registration": "register", "reg": "register",
+    "fees": "fee", "tuition": "fee", "fee": "fee",
+    "faculties": "faculty", "colleges": "faculty", "college": "faculty", "faculty": "faculty",
+    "admissions": "admission", "admission": "admission",
+    "established": "founded", "establish": "founded", "founded": "founded",
+    "located": "location", "location": "location", "located": "location",
+    "courses": "course", "course": "course", "materials": "material",
+    "sheets": "sheet", "sheet": "sheet", "lectures": "lecture", "lecture": "lecture",
+    "exams": "exam", "exam": "exam", "examination": "exam",
+    "scientific": "science", "science": "science", "research": "research",
+}
+
+
 def _canon(word):
     w = word
     if len(w) <= 3:
-        return w
+        return _EN_SYN.get(w, w)
     if w.startswith("و"):
         w = w[1:]
     for p in ("وال", "بال", "كال", "لل", "ال"):
         if w.startswith(p) and len(w) > len(p) + 1:
             w = w[len(p):]
             break
-    return w
+    return _EN_SYN.get(w, w)
 
 
 def _topic_of(norm_p):
@@ -206,20 +277,20 @@ def _word_set(text):
 def _tokens(text):
     toks = []
     for w in re.findall(r"[a-z0-9]+|[\u0621-\u064a]+", _norm_ar(text)):
-        if len(w) >= 2 and w not in _AR_STOPWORDS:
+        if len(w) >= 2 and w not in _AR_STOPWORDS and w not in _EN_STOPWORDS:
             c = _canon(w)
-            if c and len(c) >= 2 and c not in _AR_STOPWORDS:
+            if c and len(c) >= 2 and c not in _AR_STOPWORDS and c not in _EN_STOPWORDS:
                 toks.append(c)
     return list(dict.fromkeys(toks))
 
 
-def fallback_kb_answer(question):
+def fallback_kb_answer(question, language="ar"):
     norm = _norm_ar(question)
     if _GREETING_PAT.search(norm) and len(_tokens(question)) <= 2:
-        return _GREETING_REPLY
+        return _GREETING_REPLY_EN if language == "en" else _GREETING_REPLY
     tokens = _tokens(question)
     if not tokens:
-        return _GENERIC_REPLY
+        return _GENERIC_REPLY_EN if language == "en" else _GENERIC_REPLY
     try:
         kb = get_knowledge_base_text()
     except Exception:
@@ -248,10 +319,10 @@ def fallback_kb_answer(question):
         if score > best_score:
             best_score, best = score, p
     if not best or best_score <= 0:
-        return None
+        return _NO_INFO_REPLY_EN if language == "en" else _NO_INFO_REPLY
     matched = [t for t in tokens if t in _word_set(best)]
     if not any(df[t] <= 12 for t in matched):
-        return _NO_INFO_REPLY
+        return _NO_INFO_REPLY_EN if language == "en" else _NO_INFO_REPLY
     best = _pick_best_section(best, tokens, n, df)
     content = best.split(": ", 1)[1] if ": " in best else best
     content = re.sub(r"\s+", " ", content).strip()
