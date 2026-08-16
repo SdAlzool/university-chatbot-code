@@ -203,6 +203,11 @@ def detect_text_language(text):
     return "ar" if _AR_CHARS.search(text) else "en"
 
 
+_EN_LANG_WORDS = {"english", "eng", "en", "انجليزي", "انجليزيه", "انكليزي", "انكليزيه"}
+_AR_LANG_WORDS = {"عربي", "عربيه", "arabic"}
+_SWITCH_WORDS = {"switch", "change", "set", "speak", "talk", "reply", "بدل", "غيره", "حول", "تحويل", "خليني", "خليها", "كلمني", "رجع", "غير", "حوّل"}
+
+
 def parse_language_toggle(text):
     t = _norm_ar(text.lower())
     words = set()
@@ -212,20 +217,22 @@ def parse_language_toggle(text):
             words.add(c)
     if len(words) > 5:
         return None
-    if words & {"english", "eng", "انجليزي", "انجليزيه", "انكليزي", "انكليزيه"}:
-        return "en"
-    if words & {"عربي", "عربيه", "arabic"}:
-        return "ar"
+    target = "en" if words & _EN_LANG_WORDS else ("ar" if words & _AR_LANG_WORDS else None)
+    if target:
+        if len(words) <= 1 or (words & (_SWITCH_WORDS | {"لغه", "language", "lang"})):
+            return target
+        return None
     if words & {"لغه", "language", "lang"}:
         return "show"
     return None
 
 
 def get_effective_language(chat_id, text):
+    detected = detect_text_language(text)
+    if detected:
+        return detected
     stored = get_chat_language(chat_id)
-    if stored in ("ar", "en"):
-        return stored
-    return detect_text_language(text)
+    return stored if stored in ("ar", "en") else "ar"
 
 
 def _norm_ar(text):
@@ -315,7 +322,7 @@ def fallback_kb_answer(question, language="ar"):
         for t in tokens:
             if t in content_ws:
                 idf = math.log((n + 1) / (df[t] + 1)) + 1.0
-                score += idf * 1.25 if t in topic_ws else idf
+                score += idf * 2.5 if t in topic_ws else idf
         if score > best_score:
             best_score, best = score, p
     if not best or best_score <= 0:
