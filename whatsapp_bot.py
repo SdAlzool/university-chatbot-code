@@ -36,6 +36,7 @@ from utils import send_otp_email, extract_pdf_text
 from handlers.admin import is_stored_admin
 from handlers.courses import _all_courses
 from handlers.general import _handle_admin_command
+from web_chat import CHAT_HTML, handle_chat_request
 
 WA_BASE = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}"
 WA_MSG_URL = f"{WA_BASE}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
@@ -848,9 +849,35 @@ class WAHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    def _send_json(self, code, obj):
+        body = json.dumps(obj, ensure_ascii=False)
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(body.encode())))
+        self.end_headers()
+        try:
+            self.wfile.write(body.encode())
+        except Exception:
+            pass
+
+    def _send_html(self, code, html):
+        data = html.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except Exception:
+            pass
+
     def do_GET(self):
         if self.path in ("/", "/healthz", "/health"):
             self._send(200, "ok")
+            return
+        if self.path == "/web" or self.path.startswith("/web?"):
+            self._send_html(200, CHAT_HTML)
             return
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         if WHATSAPP_VERIFY_TOKEN and query.get("hub.verify_token") == [WHATSAPP_VERIFY_TOKEN]:
@@ -859,6 +886,19 @@ class WAHandler(BaseHTTPRequestHandler):
             self._send(403, "Forbidden")
 
     def do_POST(self):
+        if self.path == "/api/chat":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except Exception:
+                body = {}
+            try:
+                result = handle_chat_request(body)
+            except Exception as e:
+                logging.error("Web chat POST error: %s", e)
+                result = {"reply": "Hadda qalat technical. Jarib taani."}
+            self._send_json(200, result)
+            return
         try:
             length = int(self.headers.get("Content-Length", 0))
             payload = json.loads(self.rfile.read(length) or b"{}")
