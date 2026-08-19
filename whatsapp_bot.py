@@ -36,7 +36,7 @@ from utils import send_otp_email, extract_pdf_text
 from handlers.admin import is_stored_admin
 from handlers.courses import _all_courses
 from handlers.general import _handle_admin_command
-from web_chat import CHAT_HTML, handle_chat_request
+from web_chat import CHAT_HTML, CHAT_FULL_HTML, handle_chat_request
 
 WA_BASE = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}"
 WA_MSG_URL = f"{WA_BASE}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
@@ -878,6 +878,9 @@ class WAHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/web" or self.path.startswith("/web?"):
             self._send_html(200, CHAT_HTML)
+            return
+        if self.path == "/chat" or self.path.startswith("/chat?"):
+            self._send_html(200, CHAT_FULL_HTML)
             return
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         if WHATSAPP_VERIFY_TOKEN and query.get("hub.verify_token") == [WHATSAPP_VERIFY_TOKEN]:
