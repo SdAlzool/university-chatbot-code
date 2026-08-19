@@ -129,8 +129,8 @@ def handle_upload(body):
                 s.pop("pending_file", None)
                 return {"reply": result[:4000], "pdf": pdf_b64, "pdf_name": f"{title}.pdf"}
             except Exception as e:
-                logging.error("PDF generation error: %s", e)
-                return {"reply": result[:4000]}
+                logging.exception("PDF generation error: %s", e)
+                return {"reply": result[:4000], "pdf_error": str(e)}
 
         s.pop("pending_file", None)
         return {"reply": result[:4000]}
