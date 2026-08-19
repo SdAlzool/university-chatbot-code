@@ -574,14 +574,31 @@ async def wa_process_upload(phone, action):
             send_text(phone, "تعذر تحميل الملف.")
             return
         mime = mime or _guess_mime(up.get("name") or "")
-        if action == "translate":
-            prompt = "ترجم محتوى هذا الملف إلى اللغة العربية مع الحفاظ على المعنى والمصطلحات."
+        base_action = action.removesuffix("_pdf")
+        if base_action == "translate":
+            prompt = "اكتشف لغة محتوى هذا الملف ثم ترجمه إلى اللغة المقابلة: إن كان بالعربية ترجمه إلى الإنجليزية، وإن كان بالإنجليزية ترجمه إلى العربية، مع الحفاظ على المعنى والمصطلحات."
         else:
             prompt = "لخص محتوى هذا الملف في نقاط واضحة ومرتبة باللغة العربية."
         part = types.Part.from_bytes(data=data, mime_type=mime)
         response = await call_gemini_with_retry(client.models.generate_content, model=MODEL_NAME,
                                                 contents=[prompt, part])
-        send_text(phone, (response.text or "").strip()[:4000])
+        result_text = (response.text or "").strip()[:4000]
+        if action.endswith("_pdf"):
+            try:
+                from pdf_utils import text_to_pdf_bytes
+                title = "ترجمة الملف" if base_action == "translate" else "ملخص الملف"
+                pdf_buf = await asyncio.to_thread(text_to_pdf_bytes, result_text, title)
+                pdf_bytes = pdf_buf.read() if hasattr(pdf_buf, "read") else pdf_buf
+                media_id = await asyncio.to_thread(upload_media, pdf_bytes, "application/pdf", f"{title}.pdf")
+                if media_id:
+                    send_document(phone, media_id, f"{title}.pdf")
+                else:
+                    send_text(phone, result_text)
+            except Exception:
+                logging.exception("PDF generation failed")
+                send_text(phone, result_text)
+        else:
+            send_text(phone, result_text)
     except Exception:
         logging.exception("Upload processing failed")
         send_text(phone, "تعذرت معالجة الملف.")
@@ -784,8 +801,11 @@ async def process_wa_message(phone, msg):
             "name": meta.get("filename") or meta.get("caption") or "ملف",
         }
         state["state"] = "UPLOAD_ASK_ACTION"
-        send_buttons(phone, "استلمت الملف ✅ ماذا تريد أن أفعل به؟",
-                     [("uploadact:summarize", "تلخيص"), ("uploadact:translate", "ترجمة")])
+        send_list(phone, "استلمت الملف ✅ ماذا تريد أن أفعل به؟",
+                  [("uploadact:summarize", "تلخيص كنص", "ملخص نصي بالعربي"),
+                   ("uploadact:summarize_pdf", "تلخيص كـ PDF", "تحميل ملف PDF"),
+                   ("uploadact:translate", "ترجمة كنص", "ترجمة تلقائية"),
+                   ("uploadact:translate_pdf", "ترجمة كـ PDF", "تحميل ملف PDF")])
         return
 
     if msg_type != "text":
@@ -803,10 +823,14 @@ async def process_wa_message(phone, msg):
         await wa_add_new_name(phone, text)
         return
     if current == "UPLOAD_ASK_ACTION":
-        if any(w in text for w in ("لخص", "لخّص", "تلخيص")):
+        if any(w in text for w in ("لخص", "لخّص", "تلخيص كنص")):
             await wa_process_upload(phone, "summarize")
-        elif any(w in text for w in ("ترجم", "ترجمة")):
+        elif any(w in text for w in ("ترجمة كنص", "ترجم كنص")):
             await wa_process_upload(phone, "translate")
+        elif any(w in text for w in ("تلخيص pdf", "تلخيص بي دي اف", "ملخص pdf")):
+            await wa_process_upload(phone, "summarize_pdf")
+        elif any(w in text for w in ("ترجمة pdf", "ترجمة بي دي اف", "ترجمة ملف")):
+            await wa_process_upload(phone, "translate_pdf")
         else:
             send_text(phone, "استخدم الأزرار أو اكتب: لخص / ترجم")
         return

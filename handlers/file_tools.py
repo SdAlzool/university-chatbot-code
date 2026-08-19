@@ -83,7 +83,8 @@ async def handle_file_action(update, context):
         result_text = (response.text or "").strip()
         if pdf_mode:
             title = "ترجمة" if base == "translate" else "ملخص"
-            pdf_bytes = await asyncio.to_thread(text_to_pdf_bytes, result_text, title)
+            pdf_buf = await asyncio.to_thread(text_to_pdf_bytes, result_text, title)
+            pdf_bytes = pdf_buf.read() if hasattr(pdf_buf, "read") else pdf_buf
             filename = "translation.pdf" if base == "translate" else "summary.pdf"
             await query.message.reply_document(document=pdf_bytes, filename=filename)
         else:

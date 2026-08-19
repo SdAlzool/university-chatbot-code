@@ -82,13 +82,15 @@ def handle_upload(body):
                 "actions": True,
             }
 
-        s = _get_session(sid) or {}
-        pf = s.get("pending_file")
-        if not pf:
-            return {"reply": "انتهت صلاحية الملف. أرسلو مرة أخرى."}
+        s = _get_session(sid) or _ensure_session(sid)
+        pf = s.get("pending_file") if not file_b64 else None
 
-        raw = base64.b64decode(pf["data"])
-        pmime = pf["mime"]
+        if pf:
+            raw = base64.b64decode(pf["data"])
+            pmime = pf["mime"]
+        else:
+            raw = data
+            pmime = mime
 
         if action == "summarize":
             prompt = "لخص محتوى هذا الملف في نقاط واضحة ومرتبة باللغة العربية."
