@@ -594,3 +594,5 @@ window.loginVerify=function(){
 </html>"""
 
 CHAT_HTML = CHAT_FULL_HTML
+
+_VERSION = "2.1"
