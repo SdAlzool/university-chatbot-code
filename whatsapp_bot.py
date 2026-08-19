@@ -578,7 +578,7 @@ async def wa_process_upload(phone, action):
         if base_action == "translate":
             prompt = "اكتشف لغة محتوى هذا الملف ثم ترجمه إلى اللغة المقابلة: إن كان بالعربية ترجمه إلى الإنجليزية، وإن كان بالإنجليزية ترجمه إلى العربية، مع الحفاظ على المعنى والمصطلحات."
         else:
-            prompt = "لخص محتوى هذا الملف في نقاط واضحة ومرتبة باللغة العربية."
+            prompt = "لخص محتوى هذا الملف في نقاط واضحة ومرتبة. اكتب الملخص بنفس لغة الملف الأصلية."
         part = types.Part.from_bytes(data=data, mime_type=mime)
         response = await call_gemini_with_retry(client.models.generate_content, model=MODEL_NAME,
                                                 contents=[prompt, part])

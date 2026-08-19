@@ -76,7 +76,7 @@ async def handle_file_action(update, context):
         prompt = ("اكتشف لغة محتوى هذا الملف ثم ترجمه إلى اللغة المقابلة: إن كان بالعربية ترجمه "
                   "إلى الإنجليزية، وإن كان بالإنجليزية ترجمه إلى العربية، مع الحفاظ على المعنى والمصطلحات."
                   if base == "translate"
-                  else "لخص محتوى هذا الملف في نقاط واضحة ومرتبة باللغة العربية.")
+                  else "لخص محتوى هذا الملف في نقاط واضحة ومرتبة. اكتب الملخص بنفس لغة الملف الأصلية.")
         part = types.Part.from_bytes(data=pending["data"], mime_type=pending["mime"])
         response = await call_gemini_with_retry(client.models.generate_content, model=MODEL_NAME,
                                                 contents=[prompt, part])

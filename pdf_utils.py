@@ -1,4 +1,4 @@
-"""توليد ملف PDF بالعربية من نص (يدعم التلخيص/الترجمة)."""
+"""توليد ملف PDF من نص (يدعم التلخيص/الترجمة)."""
 import io
 import os
 
@@ -10,10 +10,12 @@ from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 
+_DIR = os.path.dirname(os.path.abspath(__file__))
 FONT_CANDIDATES = [
+    os.path.join(_DIR, "fonts", "NotoSansArabic.ttf"),
+    os.path.join(_DIR, "fonts", "NotoSansArabic-Regular.ttf"),
     r"C:\Windows\Fonts\tahoma.ttf",
     r"C:\Windows\Fonts\arial.ttf",
-    r"C:\Windows\Fonts\segoeui.ttf",
 ]
 
 PAGE_W, PAGE_H = A4
