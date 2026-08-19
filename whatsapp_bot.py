@@ -36,7 +36,11 @@ from utils import send_otp_email, extract_pdf_text
 from handlers.admin import is_stored_admin
 from handlers.courses import _all_courses
 from handlers.general import _handle_admin_command
-from web_chat import CHAT_HTML, CHAT_FULL_HTML, handle_chat_request
+from web_chat import (
+    CHAT_HTML, CHAT_FULL_HTML,
+    handle_chat, handle_upload, handle_voice,
+    handle_login_start, handle_login_verify, handle_logout,
+)
 
 WA_BASE = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}"
 WA_MSG_URL = f"{WA_BASE}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
@@ -838,6 +842,17 @@ class WAHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def _environ(self):
+        """Build a minimal WSGI environ dict for cgi.FieldStorage."""
+        ct = self.headers.get("Content-Type", "")
+        cl = int(self.headers.get("Content-Length", 0))
+        return {
+            "REQUEST_METHOD": "POST",
+            "CONTENT_TYPE": ct,
+            "CONTENT_LENGTH": cl,
+            "wsgi.input": self.rfile,
+        }
+
     def _send(self, code, body):
         data = body.encode() if isinstance(body, str) else body
         self.send_response(code)
@@ -889,6 +904,8 @@ class WAHandler(BaseHTTPRequestHandler):
             self._send(403, "Forbidden")
 
     def do_POST(self):
+        ct = self.headers.get("Content-Type", "")
+
         if self.path == "/api/chat":
             try:
                 length = int(self.headers.get("Content-Length", 0))
@@ -896,12 +913,73 @@ class WAHandler(BaseHTTPRequestHandler):
             except Exception:
                 body = {}
             try:
-                result = handle_chat_request(body)
+                result = handle_chat(body)
             except Exception as e:
                 logging.error("Web chat POST error: %s", e)
-                result = {"reply": "Hadda qalat technical. Jarib taani."}
+                result = {"reply": "حصل خطأ تقني. جرب تاني."}
             self._send_json(200, result)
             return
+
+        if self.path == "/api/upload" and "multipart/form-data" in ct:
+            try:
+                result = handle_upload(self._environ())
+            except Exception as e:
+                logging.error("Upload error: %s", e)
+                result = {"reply": "تعذرت معالجة الملف."}
+            self._send_json(200, result)
+            return
+
+        if self.path == "/api/voice" and "multipart/form-data" in ct:
+            try:
+                result = handle_voice(self._environ())
+            except Exception as e:
+                logging.error("Voice error: %s", e)
+                result = {"reply": "تعذرت معالجة الصوت."}
+            self._send_json(200, result)
+            return
+
+        if self.path == "/api/login/start":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except Exception:
+                body = {}
+            try:
+                result = handle_login_start(body)
+            except Exception as e:
+                logging.error("Login start error: %s", e)
+                result = {"reply": "خطأ في الخادم."}
+            self._send_json(200, result)
+            return
+
+        if self.path == "/api/login/verify":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except Exception:
+                body = {}
+            try:
+                result = handle_login_verify(body)
+            except Exception as e:
+                logging.error("Login verify error: %s", e)
+                result = {"reply": "خطأ في الخادم."}
+            self._send_json(200, result)
+            return
+
+        if self.path == "/api/logout":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except Exception:
+                body = {}
+            try:
+                result = handle_logout(body)
+            except Exception as e:
+                logging.error("Logout error: %s", e)
+                result = {"reply": "خطأ في الخادم."}
+            self._send_json(200, result)
+            return
+
         try:
             length = int(self.headers.get("Content-Length", 0))
             payload = json.loads(self.rfile.read(length) or b"{}")
