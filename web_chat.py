@@ -121,11 +121,11 @@ def handle_upload(body):
             try:
                 from pdf_utils import text_to_pdf_bytes
                 title = "ترجمة الملف" if "translate" in action else "ملخص الملف"
-                pdf_bytes = asyncio.run(
+                pdf_buf = asyncio.run(
                     asyncio.to_thread(text_to_pdf_bytes, result, title)
                 )
-                import io
-                pdf_b64 = base64.b64encode(pdf_bytes).decode()
+                pdf_raw = pdf_buf.read() if hasattr(pdf_buf, "read") else bytes(pdf_buf)
+                pdf_b64 = base64.b64encode(pdf_raw).decode()
                 s.pop("pending_file", None)
                 return {"reply": result[:4000], "pdf": pdf_b64, "pdf_name": f"{title}.pdf"}
             except Exception as e:
