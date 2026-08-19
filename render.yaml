@@ -3,7 +3,7 @@ services:
     name: university-chatbot
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt --quiet
     startCommand: python render_launcher.py
     healthCheckPath: /
     envVars:
