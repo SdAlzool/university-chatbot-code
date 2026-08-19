@@ -2,18 +2,31 @@
 import io
 import os
 
-import arabic_reshaper
-from bidi.algorithm import get_display
+_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _has_arabic_reshaper():
+    try:
+        import arabic_reshaper
+        return True
+    except ImportError:
+        return False
+
+HAS_ARABIC = _has_arabic_reshaper()
+
+if HAS_ARABIC:
+    import arabic_reshaper
+    from bidi.algorithm import get_display
+
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 
-_DIR = os.path.dirname(os.path.abspath(__file__))
 FONT_CANDIDATES = [
-    os.path.join(_DIR, "fonts", "NotoSansArabic.ttf"),
     os.path.join(_DIR, "fonts", "NotoSansArabic-Regular.ttf"),
+    os.path.join(_DIR, "fonts", "NotoSansArabic-Bold.ttf"),
     r"C:\Windows\Fonts\tahoma.ttf",
     r"C:\Windows\Fonts\arial.ttf",
 ]
@@ -27,14 +40,19 @@ LINE_HEIGHT = 16
 def _load_font():
     path = next((p for p in FONT_CANDIDATES if os.path.exists(p)), None)
     if not path:
-        raise RuntimeError("لا يوجد خط عربي متاح في النظام.")
+        return "Helvetica"
     name = f"ArabicFont{abs(hash(path))}"
-    pdfmetrics.registerFont(TTFont(name, path))
+    try:
+        pdfmetrics.registerFont(TTFont(name, path))
+    except Exception:
+        return "Helvetica"
     return name
 
 
 def _reshape(text):
-    return get_display(arabic_reshaper.reshape(text))
+    if HAS_ARABIC:
+        return get_display(arabic_reshaper.reshape(text))
+    return text
 
 
 def _wrap(text, font_name, font_size, max_width):
