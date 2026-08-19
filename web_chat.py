@@ -526,3 +526,5 @@ window.loginVerify=function(){
 </script>
 </body>
 </html>"""
+
+CHAT_HTML = CHAT_FULL_HTML
