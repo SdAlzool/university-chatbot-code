@@ -1,7 +1,6 @@
 """Web chat — full-featured chat UI + API (files, voice, login, AI answers)."""
 import asyncio
-import cgi
-import io
+import base64
 import json
 import logging
 import random
@@ -63,25 +62,17 @@ def handle_chat(body):
     return {"reply": reply, "session_id": sid}
 
 
-def handle_upload(environ):
+def handle_upload(body):
     try:
-        form = cgi.FieldStorage(
-            fp=environ["wsgi.input"], environ=environ,
-            keep_blank_values=True,
-        )
-        file_field = form["file"]
-        action = form.getfirst("action", "summarize")
-        sid = form.getfirst("session_id", "")
-
-        data = file_field.file.read()
-        name = file_field.filename or "file"
-        mime = file_field.type or "application/octet-stream"
-
+        file_b64 = body.get("file_data") or ""
+        action = body.get("action") or "summarize"
+        name = body.get("filename") or "file"
+        mime = body.get("mime") or "application/octet-stream"
+        data = base64.b64decode(file_b64)
         if len(data) > 20_000_000:
             return {"reply": "الملف كبير جداً (أكبر من 20MB)."}
         if not data:
             return {"reply": "الملف فاضي."}
-
         prompt = (
             "اكتشف لغة محتوى هذا الملف ثم ترجمه إلى اللغة المقابلة: إن كان بالعربية ترجمه "
             "إلى الإنجليزية، وإن كان بالإنجليزية ترجمه إلى العربية، مع الحفاظ على المعنى والمصطلحات."
@@ -96,28 +87,20 @@ def handle_upload(environ):
                 contents=[prompt, part],
             )
         )
-        result = (response.text or "").strip()
-        if not result:
-            result = "تعذرت معالجة الملف."
+        result = (response.text or "").strip() or "تعذرت معالجة الملف."
         return {"reply": result[:4000], "filename": name}
     except Exception as e:
         logging.error("Upload error: %s", e)
         return {"reply": "تعذرت معالجة الملف. حاول تاني."}
 
 
-def handle_voice(environ):
+def handle_voice(body):
     try:
-        form = cgi.FieldStorage(
-            fp=environ["wsgi.input"], environ=environ,
-            keep_blank_values=True,
-        )
-        audio_field = form["audio"]
-        sid = form.getfirst("session_id", "")
-
-        data = audio_field.file.read()
+        audio_b64 = body.get("audio_data") or ""
+        sid = body.get("session_id") or ""
+        data = base64.b64decode(audio_b64)
         if not data:
             return {"reply": "الملف الصوتي فاضي."}
-
         part = types.Part.from_bytes(data=data, mime_type="audio/webm")
         stt = asyncio.run(
             call_gemini_with_retry(
@@ -129,7 +112,6 @@ def handle_voice(environ):
         text = (stt.text or "").strip()
         if not text:
             return {"reply": "ما قدرت أسمع الكلام جيداً. جرب تاني.", "transcribed": ""}
-
         s = _get_session(sid) or {}
         chat_id = s.get("chat_id", 0)
         lang = detect_text_language(text)
@@ -450,14 +432,18 @@ quick.addEventListener('click',function(e){if(e.target.dataset.q)send(e.target.d
 /* ── File Upload ── */
 window.uploadFile=function(el){
   var f=el.files[0];if(!f)return;
-  var fd=new FormData();fd.append('file',f);fd.append('session_id',sid);
-  addMsg('جاري تحميل '+f.name+'...','file-info');
-  quick.style.display='none';showTyping();
-  fetch('/api/upload',{method:'POST',body:fd})
-  .then(function(r){return r.json()})
-  .then(function(d){hideTyping();addMsg(d.reply||'تعذرت المعالجة.','bot');actionRow.style.display='none'})
-  .catch(function(){hideTyping();addMsg('خطأ في رفع الملف.','bot')});
-  el.value='';
+  var reader=new FileReader();
+  reader.onload=function(){
+    var b64=reader.result.split(',')[1];
+    addMsg('جاري تحميل '+f.name+'...','file-info');
+    quick.style.display='none';showTyping();
+    fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({file_data:b64,filename:f.name,mime:f.type||'application/octet-stream',session_id:sid})})
+    .then(function(r){return r.json()})
+    .then(function(d){hideTyping();addMsg(d.reply||'تعذرت المعالجة.','bot');actionRow.style.display='none'})
+    .catch(function(){hideTyping();addMsg('خطأ في رفع الملف.','bot')});
+  };
+  reader.readAsDataURL(f);el.value='';
 };
 
 /* ── Voice Recording ── */
@@ -474,16 +460,21 @@ window.toggleMic=function(){
     mediaRecorder.onstop=function(){
       stream.getTracks().forEach(function(t){t.stop()});
       var blob=new Blob(audioChunks,{type:'audio/webm'});
-      var fd=new FormData();fd.append('audio',blob,'voice.webm');fd.append('session_id',sid);
-      quick.style.display='none';showTyping();
-      fetch('/api/voice',{method:'POST',body:fd})
-      .then(function(r){return r.json()})
-      .then(function(d){
-        hideTyping();
-        if(d.transcribed)addMsg('&#127908; '+d.transcribed,'voice-info');
-        addMsg(d.reply||'تعذرت معالجة الصوت.','bot');
-      })
-      .catch(function(){hideTyping();addMsg('خطأ في معالجة الصوت.','bot')});
+      var reader=new FileReader();
+      reader.onload=function(){
+        var b64=reader.result.split(',')[1];
+        quick.style.display='none';showTyping();
+        fetch('/api/voice',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({audio_data:b64,session_id:sid})})
+        .then(function(r){return r.json()})
+        .then(function(d){
+          hideTyping();
+          if(d.transcribed)addMsg('&#127908; '+d.transcribed,'voice-info');
+          addMsg(d.reply||'تعذرت معالجة الصوت.','bot');
+        })
+        .catch(function(){hideTyping();addMsg('خطأ في معالجة الصوت.','bot')});
+      };
+      reader.readAsDataURL(blob);
     };
     mediaRecorder.start();
   }).catch(function(){addMsg('ما قدرت أفتح الميكروفون. ا granting صلاحية الميكروفون.','bot')});

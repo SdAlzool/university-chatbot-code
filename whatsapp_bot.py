@@ -906,77 +906,31 @@ class WAHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         ct = self.headers.get("Content-Type", "")
 
-        if self.path == "/api/chat":
+        if self.path in ("/api/chat", "/api/upload", "/api/voice",
+                         "/api/login/start", "/api/login/verify", "/api/logout"):
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 body = json.loads(self.rfile.read(length) or b"{}")
             except Exception:
                 body = {}
             try:
-                result = handle_chat(body)
+                if self.path == "/api/chat":
+                    result = handle_chat(body)
+                elif self.path == "/api/upload":
+                    result = handle_upload(body)
+                elif self.path == "/api/voice":
+                    result = handle_voice(body)
+                elif self.path == "/api/login/start":
+                    result = handle_login_start(body)
+                elif self.path == "/api/login/verify":
+                    result = handle_login_verify(body)
+                elif self.path == "/api/logout":
+                    result = handle_logout(body)
+                else:
+                    result = {"reply": "Unknown endpoint"}
             except Exception as e:
-                logging.error("Web chat POST error: %s", e)
-                result = {"reply": "حصل خطأ تقني. جرب تاني."}
-            self._send_json(200, result)
-            return
-
-        if self.path == "/api/upload" and "multipart/form-data" in ct:
-            try:
-                result = handle_upload(self._environ())
-            except Exception as e:
-                logging.error("Upload error: %s", e)
-                result = {"reply": "تعذرت معالجة الملف."}
-            self._send_json(200, result)
-            return
-
-        if self.path == "/api/voice" and "multipart/form-data" in ct:
-            try:
-                result = handle_voice(self._environ())
-            except Exception as e:
-                logging.error("Voice error: %s", e)
-                result = {"reply": "تعذرت معالجة الصوت."}
-            self._send_json(200, result)
-            return
-
-        if self.path == "/api/login/start":
-            try:
-                length = int(self.headers.get("Content-Length", 0))
-                body = json.loads(self.rfile.read(length) or b"{}")
-            except Exception:
-                body = {}
-            try:
-                result = handle_login_start(body)
-            except Exception as e:
-                logging.error("Login start error: %s", e)
-                result = {"reply": "خطأ في الخادم."}
-            self._send_json(200, result)
-            return
-
-        if self.path == "/api/login/verify":
-            try:
-                length = int(self.headers.get("Content-Length", 0))
-                body = json.loads(self.rfile.read(length) or b"{}")
-            except Exception:
-                body = {}
-            try:
-                result = handle_login_verify(body)
-            except Exception as e:
-                logging.error("Login verify error: %s", e)
-                result = {"reply": "خطأ في الخادم."}
-            self._send_json(200, result)
-            return
-
-        if self.path == "/api/logout":
-            try:
-                length = int(self.headers.get("Content-Length", 0))
-                body = json.loads(self.rfile.read(length) or b"{}")
-            except Exception:
-                body = {}
-            try:
-                result = handle_logout(body)
-            except Exception as e:
-                logging.error("Logout error: %s", e)
-                result = {"reply": "خطأ في الخادم."}
+                logging.error("Web API error (%s): %s", self.path, e)
+                result = {"reply": "حصل خطأ تقني."}
             self._send_json(200, result)
             return
 
