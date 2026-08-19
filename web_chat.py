@@ -61,25 +61,51 @@ def handle_chat(body):
         reply = "حصل خطأ تقني. جرب تاني بعد شوية."
     return {"reply": reply, "session_id": sid}
 
-
 def handle_upload(body):
     try:
         file_b64 = body.get("file_data") or ""
-        action = body.get("action") or "summarize"
+        action = body.get("action") or ""
         name = body.get("filename") or "file"
         mime = body.get("mime") or "application/octet-stream"
+        sid = body.get("session_id") or ""
         data = base64.b64decode(file_b64)
         if len(data) > 20_000_000:
             return {"reply": "الملف كبير جداً (أكبر من 20MB)."}
         if not data:
             return {"reply": "الملف فاضي."}
-        prompt = (
-            "اكتشف لغة محتوى هذا الملف ثم ترجمه إلى اللغة المقابلة: إن كان بالعربية ترجمه "
-            "إلى الإنجليزية، وإن كان بالإنجليزية ترجمه إلى العربية، مع الحفاظ على المعنى والمصطلحات."
-            if action == "translate"
-            else "لخص محتوى هذا الملف في نقاط واضحة ومرتبة."
-        )
-        part = types.Part.from_bytes(data=data, mime_type=mime)
+
+        if not action:
+            s = _get_session(sid) or _ensure_session(sid)
+            s["pending_file"] = {"data": file_b64, "name": name, "mime": mime}
+            return {
+                "reply": f"تم استلام الملف ({name}) ✅ اختر:",
+                "actions": True,
+            }
+
+        s = _get_session(sid) or {}
+        pf = s.get("pending_file")
+        if not pf:
+            return {"reply": "انتهت صلاحية الملف. أرسلو مرة أخرى."}
+
+        raw = base64.b64decode(pf["data"])
+        pmime = pf["mime"]
+
+        if action == "summarize":
+            prompt = "لخص محتوى هذا الملف في نقاط واضحة ومرتبة باللغة العربية."
+        elif action == "summarize_pdf":
+            prompt = "لخص محتوى هذا الملف في نقاط واضحة ومرتبة باللغة العربية."
+        elif action == "translate":
+            prompt = ("اكتشف لغة محتوى هذا الملف ثم ترجمه إلى اللغة المقابلة: "
+                      "إن كان بالعربية ترجمه إلى الإنجليزية، وإن كان بالإنجليزية "
+                      "ترجمه إلى العربية، مع الحفاظ على المعنى والمصطلحات.")
+        elif action == "translate_pdf":
+            prompt = ("اكتشف لغة محتوى هذا الملف ثم ترجمه إلى اللغة المقابلة: "
+                      "إن كان بالعربية ترجمه إلى الإنجليزية، وإن كان بالإنجليزية "
+                      "ترجمه إلى العربية، مع الحفاظ على المعنى والمصطلحات.")
+        else:
+            prompt = "لخص محتوى هذا الملف في نقاط واضحة ومرتبة باللغة العربية."
+
+        part = types.Part.from_bytes(data=raw, mime_type=pmime)
         response = asyncio.run(
             call_gemini_with_retry(
                 client.models.generate_content,
@@ -88,7 +114,24 @@ def handle_upload(body):
             )
         )
         result = (response.text or "").strip() or "تعذرت معالجة الملف."
-        return {"reply": result[:4000], "filename": name}
+
+        if action in ("summarize_pdf", "translate_pdf"):
+            try:
+                from pdf_utils import text_to_pdf_bytes
+                title = "ترجمة الملف" if "translate" in action else "ملخص الملف"
+                pdf_bytes = asyncio.run(
+                    asyncio.to_thread(text_to_pdf_bytes, result, title)
+                )
+                import io
+                pdf_b64 = base64.b64encode(pdf_bytes).decode()
+                s.pop("pending_file", None)
+                return {"reply": result[:4000], "pdf": pdf_b64, "pdf_name": f"{title}.pdf"}
+            except Exception as e:
+                logging.error("PDF generation error: %s", e)
+                return {"reply": result[:4000]}
+
+        s.pop("pending_file", None)
+        return {"reply": result[:4000]}
     except Exception as e:
         logging.error("Upload error: %s", e)
         return {"reply": "تعذرت معالجة الملف. حاول تاني."}
@@ -356,7 +399,9 @@ a{text-decoration:none}
 
   <div class="action-row" id="actionRow">
     <button onclick="doFileAction('summarize')">&#128203; تلخيص كنص</button>
+    <button onclick="doFileAction('summarize_pdf')">&#128211; تلخيص كـ PDF</button>
     <button onclick="doFileAction('translate')">&#128269; ترجمة كنص</button>
+    <button onclick="doFileAction('translate_pdf')">&#128196; ترجمة كـ PDF</button>
   </div>
 
   <div class="typing" id="typing"><span></span><span></span><span></span></div>
@@ -435,15 +480,34 @@ window.uploadFile=function(el){
   var reader=new FileReader();
   reader.onload=function(){
     var b64=reader.result.split(',')[1];
+    pendingFile={data:b64,name:f.name,mime:f.type||'application/octet-stream'};
     addMsg('جاري تحميل '+f.name+'...','file-info');
     quick.style.display='none';showTyping();
     fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({file_data:b64,filename:f.name,mime:f.type||'application/octet-stream',session_id:sid})})
     .then(function(r){return r.json()})
-    .then(function(d){hideTyping();addMsg(d.reply||'تعذرت المعالجة.','bot');actionRow.style.display='none'})
+    .then(function(d){hideTyping();addMsg(d.reply||'تعذرت المعالجة.','bot');if(d.actions)actionRow.style.display='flex'})
     .catch(function(){hideTyping();addMsg('خطأ في رفع الملف.','bot')});
   };
   reader.readAsDataURL(f);el.value='';
+};
+window.doFileAction=function(act){
+  if(!pendingFile)return;
+  actionRow.style.display='none';
+  addMsg('جاري المعالجة...','file-info');showTyping();
+  fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({file_data:pendingFile.data,filename:pendingFile.name,mime:pendingFile.mime,action:act,session_id:sid})})
+  .then(function(r){return r.json()})
+  .then(function(d){
+    hideTyping();
+    if(d.pdf){
+      var ln=document.createElement('a');ln.href='data:application/pdf;base64,'+d.pdf;
+      ln.download=d.pdf_name||'result.pdf';ln.className='msg file-info';
+      ln.innerHTML='&#128196; تحميل '+d.pdf_name;msgs.appendChild(ln);msgs.scrollTop=msgs.scrollHeight;
+    }
+    addMsg(d.reply||'تعذرت المعالجة.','bot');pendingFile=null;
+  })
+  .catch(function(){hideTyping();addMsg('خطأ في المعالجة.','bot');pendingFile=null});
 };
 
 /* ── Voice Recording ── */
