@@ -54,3 +54,40 @@ def set_chat_language(chat_id, language):
         "chat_id": str(chat_id),
         "language": language,
     })
+
+WELCOME_COOLDOWN_SECONDS = 5 * 3600
+
+def was_welcome_sent(phone):
+    doc = db.collection("wa_welcome").document(phone).get()
+    if doc.exists:
+        last = doc.to_dict().get("last_sent", 0)
+        return (time.time() - last) < WELCOME_COOLDOWN_SECONDS
+    return False
+
+def mark_welcome_sent(phone):
+    db.collection("wa_welcome").document(phone).set({
+        "last_sent": time.time(),
+    })
+
+def save_pending_upload(phone, media_id, filename):
+    db.collection("wa_uploads").document(phone).set({
+        "media_id": media_id,
+        "filename": filename,
+        "created": time.time(),
+    })
+
+def get_pending_upload(phone):
+    doc = db.collection("wa_uploads").document(phone).get()
+    if not doc.exists:
+        return None
+    data = doc.to_dict()
+    if time.time() - data.get("created", 0) > 3600:
+        db.collection("wa_uploads").document(phone).delete()
+        return None
+    return data
+
+def clear_pending_upload(phone):
+    try:
+        db.collection("wa_uploads").document(phone).delete()
+    except Exception:
+        pass

@@ -23,7 +23,7 @@ from config import (
     WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_VERIFY_TOKEN,
     WHATSAPP_API_VERSION, WHATSAPP_PORT, ADMIN_WHATSAPP_NUMBERS,
 )
-from database import get_student_by_chat_id, get_instructor_by_chat_id, set_chat_language
+from database import get_student_by_chat_id, get_instructor_by_chat_id, set_chat_language, was_welcome_sent, mark_welcome_sent, save_pending_upload, get_pending_upload, clear_pending_upload
 from gemini_services import (
     call_gemini_with_retry, detect_user_intent, generate_answer,
     parse_language_toggle, get_effective_language,
@@ -564,9 +564,13 @@ async def wa_process_upload(phone, action):
     state = _get_state(phone)
     up = state.get("upload_file")
     if not up:
-        send_text(phone, "لم أجد الملف. أرسله مرة أخرى.")
-        _reset_state(phone)
-        return
+        saved = get_pending_upload(phone)
+        if saved:
+            up = saved
+        else:
+            send_text(phone, "لم أجد الملف. أرسله مرة أخرى.")
+            _reset_state(phone)
+            return
     send_text(phone, "جاري المعالجة…")
     try:
         data, mime = await asyncio.to_thread(download_media, up["media_id"])
@@ -603,6 +607,7 @@ async def wa_process_upload(phone, action):
         logging.exception("Upload processing failed")
         send_text(phone, "تعذرت معالجة الملف.")
     finally:
+        clear_pending_upload(phone)
         _reset_state(phone)
 
 
@@ -763,8 +768,9 @@ async def handle_voice(phone, media_id):
 
 async def process_wa_message(phone, msg):
     state = _get_state(phone)
-    if not state.get("welcome_sent"):
+    if not state.get("welcome_sent") and not was_welcome_sent(phone):
         state["welcome_sent"] = True
+        mark_welcome_sent(phone)
         wa_help(phone)
         send_buttons(phone, "كيف تريد المتابعة؟",
                      [("login", "تسجيل الدخول"), ("guest", "المتابعة كزائر")])
@@ -801,6 +807,7 @@ async def process_wa_message(phone, msg):
             "name": meta.get("filename") or meta.get("caption") or "ملف",
         }
         state["state"] = "UPLOAD_ASK_ACTION"
+        save_pending_upload(phone, media_id, meta.get("filename") or meta.get("caption") or "ملف")
         send_list(phone, "استلمت الملف ✅ ماذا تريد أن أفعل به؟",
                   [("uploadact:summarize", "تلخيص كنص", "ملخص نصي بالعربي"),
                    ("uploadact:summarize_pdf", "تلخيص كـ PDF", "تحميل ملف PDF"),
