@@ -69,9 +69,16 @@ def mark_welcome_sent(phone):
         "last_sent": time.time(),
     })
 
-def save_pending_upload(phone, media_id, filename):
+def save_pending_upload(phone, file_data, filename):
+    import base64 as _b64
+    if isinstance(file_data, bytes):
+        if len(file_data) > 800_000:
+            return
+        encoded = _b64.b64encode(file_data).decode()
+    else:
+        encoded = file_data
     db.collection("wa_uploads").document(phone).set({
-        "media_id": media_id,
+        "data": encoded,
         "filename": filename,
         "created": time.time(),
     })
@@ -84,7 +91,10 @@ def get_pending_upload(phone):
     if time.time() - data.get("created", 0) > 3600:
         db.collection("wa_uploads").document(phone).delete()
         return None
-    return data
+    import base64 as _b64
+    raw = data.get("data", "")
+    file_data = _b64.b64decode(raw) if isinstance(raw, str) and raw else raw
+    return {"data": file_data, "mime": data.get("mime", "application/octet-stream"), "filename": data.get("filename", "file")}
 
 def clear_pending_upload(phone):
     try:

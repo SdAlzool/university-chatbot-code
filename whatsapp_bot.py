@@ -573,17 +573,17 @@ async def wa_process_upload(phone, action):
             return
     send_text(phone, "جاري المعالجة…")
     try:
-        data, mime = await asyncio.to_thread(download_media, up["media_id"])
-        if not data:
-            send_text(phone, "تعذر تحميل الملف.")
+        file_data = up.get("data")
+        mime = up.get("mime") or _guess_mime(up.get("name") or "")
+        if not file_data:
+            send_text(phone, "تعذر تحميل الملف. أرسلو مرة أخرى.")
             return
-        mime = mime or _guess_mime(up.get("name") or "")
         base_action = action.removesuffix("_pdf")
         if base_action == "translate":
             prompt = "اكتشف لغة محتوى هذا الملف ثم ترجمه إلى اللغة المقابلة: إن كان بالعربية ترجمه إلى الإنجليزية، وإن كان بالإنجليزية ترجمه إلى العربية، مع الحفاظ على المعنى والمصطلحات."
         else:
             prompt = "لخص محتوى هذا الملف في نقاط واضحة ومرتبة. اكتب الملخص بنفس لغة الملف الأصلية."
-        part = types.Part.from_bytes(data=data, mime_type=mime)
+        part = types.Part.from_bytes(data=file_data, mime_type=mime)
         response = await call_gemini_with_retry(client.models.generate_content, model=MODEL_NAME,
                                                 contents=[prompt, part])
         result_text = (response.text or "").strip()[:4000]
@@ -802,12 +802,17 @@ async def process_wa_message(phone, msg):
         if not media_id:
             send_text(phone, "تعذر استلام الملف.")
             return
+        file_data, file_mime = await asyncio.to_thread(download_media, media_id)
+        if not file_data:
+            send_text(phone, "تعذر تحميل الملف. أرسلو مرة أخرى.")
+            return
         state["upload_file"] = {
-            "media_id": media_id,
+            "data": file_data,
+            "mime": file_mime or _guess_mime(meta.get("filename") or ""),
             "name": meta.get("filename") or meta.get("caption") or "ملف",
         }
         state["state"] = "UPLOAD_ASK_ACTION"
-        save_pending_upload(phone, media_id, meta.get("filename") or meta.get("caption") or "ملف")
+        save_pending_upload(phone, file_data, meta.get("filename") or meta.get("caption") or "ملف")
         send_list(phone, "استلمت الملف ✅ ماذا تريد أن أفعل به؟",
                   [("uploadact:summarize", "تلخيص كنص", "ملخص نصي بالعربي"),
                    ("uploadact:summarize_pdf", "تلخيص كـ PDF", "تحميل ملف PDF"),
