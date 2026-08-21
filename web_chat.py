@@ -502,12 +502,21 @@ window.doFileAction=function(act){
   .then(function(r){return r.json()})
   .then(function(d){
     hideTyping();
+    addMsg(d.reply||'تعذرت المعالجة.','bot');
     if(d.pdf){
-      var ln=document.createElement('a');ln.href='data:application/pdf;base64,'+d.pdf;
-      ln.download=d.pdf_name||'result.pdf';ln.className='msg file-info';
-      ln.innerHTML='&#128196; تحميل '+d.pdf_name;msgs.appendChild(ln);msgs.scrollTop=msgs.scrollHeight;
+      try{
+        var raw=atob(d.pdf);var arr=new Uint8Array(raw.length);
+        for(var i=0;i<raw.length;i++)arr[i]=raw.charCodeAt(i);
+        var blob=new Blob([arr],{type:'application/pdf'});
+        var url=URL.createObjectURL(blob);
+        var wrap=document.createElement('div');wrap.className='msg file-info';
+        var btn=document.createElement('a');btn.href=url;
+        btn.download=d.pdf_name||'result.pdf';btn.target='_blank';
+        btn.style.cssText='display:inline-block;padding:10px 20px;background:#000067;color:#fff;border-radius:8px;text-decoration:none;font-size:14px;margin-top:4px';
+        btn.innerHTML='&#128196; تحميل '+d.pdf_name;wrap.appendChild(btn);msgs.appendChild(wrap);
+      }catch(e){console.error('PDF download error',e)}
     }
-    addMsg(d.reply||'تعذرت المعالجة.','bot');pendingFile=null;
+    msgs.scrollTop=msgs.scrollHeight;pendingFile=null;
   })
   .catch(function(){hideTyping();addMsg('خطأ في المعالجة.','bot');pendingFile=null});
 };
