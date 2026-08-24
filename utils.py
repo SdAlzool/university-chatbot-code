@@ -5,14 +5,22 @@ from pypdf import PdfReader
 from config import EMAIL_ADDRESS, EMAIL_APP_PASSWORD
 
 def send_otp_email(to_email, otp_code):
-    msg = MIMEText(f"رمز التحقق الخاص بك هو: {otp_code}\nصالح لمدة 5 دقائق.")
+    sender = (EMAIL_ADDRESS or "").strip()
+    password = "".join((EMAIL_APP_PASSWORD or "").split())
+    recipient = (to_email or "").strip()
+    if not sender or not password or not recipient:
+        raise ValueError("Email settings or recipient are missing")
+    msg = MIMEText(
+        f"رمز التحقق الخاص بك هو: {otp_code}\nصالح لمدة 5 دقائق.",
+        _charset="utf-8",
+    )
     msg["Subject"] = "رمز تحقق - بوت خدمات الجامعة"
-    msg["From"] = EMAIL_ADDRESS
-    msg["To"] = to_email
+    msg["From"] = sender
+    msg["To"] = recipient
     server = smtplib.SMTP("smtp.gmail.com", 587, timeout=20)
     try:
         server.starttls()
-        server.login(EMAIL_ADDRESS, EMAIL_APP_PASSWORD)
+        server.login(sender, password)
         server.send_message(msg)
     finally:
         try:

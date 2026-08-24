@@ -69,7 +69,7 @@ def mark_welcome_sent(phone):
         "last_sent": time.time(),
     })
 
-def save_pending_upload(phone, file_data, filename):
+def save_pending_upload(phone, file_data, filename, mime=None):
     import base64 as _b64
     if isinstance(file_data, bytes):
         if len(file_data) > 800_000:
@@ -80,6 +80,7 @@ def save_pending_upload(phone, file_data, filename):
     db.collection("wa_uploads").document(phone).set({
         "data": encoded,
         "filename": filename,
+        "mime": mime or "application/octet-stream",
         "created": time.time(),
     })
 

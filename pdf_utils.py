@@ -43,7 +43,9 @@ LINE_HEIGHT = 16
 
 
 def _strip_md(text):
+    text = re.sub(r"^\s*```(?:\w+)?\s*$", "", text, flags=re.MULTILINE)
     text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*[-*+]\s+", "• ", text, flags=re.MULTILINE)
     text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
     text = re.sub(r"\*(.+?)\*", r"\1", text)
     text = re.sub(r"`(.+?)`", r"\1", text)
@@ -63,9 +65,11 @@ def _load_font():
 
 
 def _reshape(text):
-    if HAS_ARABIC:
+    has_arabic = any("\u0600" <= char <= "\u06ff" for char in text)
+    if HAS_ARABIC and has_arabic:
         try:
-            return get_display(arabic_reshaper.reshape(text))
+            # Force RTL paragraph direction so list numbers and punctuation keep their role.
+            return get_display(arabic_reshaper.reshape(text), base_dir="R")
         except Exception:
             return text
     return text

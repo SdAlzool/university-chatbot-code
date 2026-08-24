@@ -38,7 +38,7 @@ from handlers.courses import _all_courses
 from handlers.general import _handle_admin_command
 from web_chat import (
     CHAT_HTML, CHAT_FULL_HTML,
-    handle_chat, handle_upload, handle_voice,
+    handle_admin, handle_chat, handle_upload, handle_voice,
     handle_login_start, handle_login_verify, handle_logout,
 )
 
@@ -289,12 +289,14 @@ async def handle_login_id(phone, user_id):
     state = _get_state(phone)
     state["data"] = {"code": code, "user_id": user_id, "role": role, "expires": time.time() + 300}
     state["state"] = "LOGIN_ASK_OTP"
-    send_text(phone, f"رمز التحقق الخاص بك هو: {code}\nصالح لمدة 5 دقائق. اكتبه هنا:")
-    if data.get("email"):
-        try:
-            await asyncio.to_thread(send_otp_email, data["email"], code)
-        except Exception:
-            logging.exception("Unable to send OTP email (code already sent in chat)")
+    try:
+        await asyncio.to_thread(send_otp_email, data["email"], code)
+    except Exception:
+        _reset_state(phone)
+        logging.exception("Unable to send OTP email")
+        send_text(phone, "تعذر إرسال رمز التحقق إلى البريد الإلكتروني.")
+        return
+    send_text(phone, "تم إرسال رمز التحقق إلى بريدك الإلكتروني. اكتبه هنا خلال 5 دقائق:")
 
 
 async def handle_login_otp(phone, otp):
@@ -812,7 +814,12 @@ async def process_wa_message(phone, msg):
             "name": meta.get("filename") or meta.get("caption") or "ملف",
         }
         state["state"] = "UPLOAD_ASK_ACTION"
-        save_pending_upload(phone, file_data, meta.get("filename") or meta.get("caption") or "ملف")
+        save_pending_upload(
+            phone,
+            file_data,
+            meta.get("filename") or meta.get("caption") or "ملف",
+            file_mime or _guess_mime(meta.get("filename") or ""),
+        )
         send_list(phone, "استلمت الملف ✅ ماذا تريد أن أفعل به؟",
                   [("uploadact:summarize", "تلخيص كنص", "ملخص نصي بالعربي"),
                    ("uploadact:summarize_pdf", "تلخيص كـ PDF", "تحميل ملف PDF"),
@@ -943,7 +950,8 @@ class WAHandler(BaseHTTPRequestHandler):
         ct = self.headers.get("Content-Type", "")
 
         if self.path in ("/api/chat", "/api/upload", "/api/voice",
-                         "/api/login/start", "/api/login/verify", "/api/logout"):
+                 "/api/login/start", "/api/login/verify", "/api/logout",
+                 "/api/admin"):
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 body = json.loads(self.rfile.read(length) or b"{}")
@@ -952,6 +960,8 @@ class WAHandler(BaseHTTPRequestHandler):
             try:
                 if self.path == "/api/chat":
                     result = handle_chat(body)
+                elif self.path == "/api/admin":
+                    result = handle_admin(body)
                 elif self.path == "/api/upload":
                     result = handle_upload(body)
                 elif self.path == "/api/voice":

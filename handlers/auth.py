@@ -37,12 +37,14 @@ async def login_ask_id(update, context):
         return ConversationHandler.END
     code = str(random.randint(100000, 999999))
     _pending_otp[update.effective_chat.id] = {"code": code, "user_id": user_id, "role": role, "expires": time.time() + 300}
-    await update.message.reply_text(f"رمز التحقق الخاص بك هو: {code}\nصالح لمدة 5 دقائق. اكتبه هنا:")
-    if data.get("email"):
-        try:
-            await asyncio.to_thread(send_otp_email, data["email"], code)
-        except Exception:
-            logging.exception("Unable to send OTP email (code already sent in chat)")
+    try:
+        await asyncio.to_thread(send_otp_email, data["email"], code)
+    except Exception:
+        _pending_otp.pop(update.effective_chat.id, None)
+        logging.exception("Unable to send OTP email")
+        await update.message.reply_text("تعذر إرسال رمز التحقق إلى البريد الإلكتروني.")
+        return ConversationHandler.END
+    await update.message.reply_text("تم إرسال رمز التحقق إلى بريدك الإلكتروني. اكتبه هنا خلال 5 دقائق:")
     return ASK_OTP
 
 async def login_ask_otp(update, context):

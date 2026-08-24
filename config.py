@@ -35,6 +35,10 @@ ADMIN_WHATSAPP_NUMBERS = {
     n.strip() for n in os.getenv("ADMIN_WHATSAPP_NUMBERS", "").split(",") if n.strip()
 }
 
+ADMIN_WEB_IDS = {
+    u.strip() for u in os.getenv("ADMIN_WEB_IDS", "").split(",") if u.strip()
+}
+
 MODEL_NAME = "gemini-3.6-flash"
 INTENT_MODEL_NAME = "gemini-3.5-flash-lite"
 

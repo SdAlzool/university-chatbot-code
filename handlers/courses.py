@@ -31,6 +31,9 @@ async def _can_access_materials(update):
     _, student = await asyncio.to_thread(get_student_by_chat_id, update.effective_chat.id)
     if student:
         return True
+    _, instructor = await asyncio.to_thread(get_instructor_by_chat_id, update.effective_chat.id)
+    if instructor:
+        return True
     return await user_is_admin(update)
 
 async def _send_file(target, file):

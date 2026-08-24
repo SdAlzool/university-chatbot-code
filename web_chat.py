@@ -9,7 +9,7 @@ import uuid
 
 from google.genai import types
 
-from config import client, db, MODEL_NAME
+from config import ADMIN_WEB_IDS, client, db, MODEL_NAME
 from database import (
     get_knowledge_base_text, get_student_by_chat_id, get_instructor_by_chat_id,
     get_chat_language, set_chat_language,
@@ -18,10 +18,156 @@ from gemini_services import (
     call_gemini_with_retry, generate_answer, detect_text_language,
 )
 from utils import send_otp_email, extract_pdf_text
+from github_utils import (
+  github_delete_file, github_upload_file, list_course_files_with_sha,
+)
 
 _sessions = {}
 _pending_otp = {}
 SESSION_TTL = 3600
+
+
+def _web_admin(session):
+  if not session or not session.get("user_id"):
+    return False
+  user_id = str(session["user_id"])
+  if user_id in ADMIN_WEB_IDS:
+    return True
+  return db.collection("admins").document(user_id).get().exists
+
+
+def handle_admin(body):
+  sid = body.get("session_id") or ""
+  session = _get_session(sid)
+  if not _web_admin(session):
+    return {"ok": False, "reply": "ليس لديك صلاحية الأدمن."}
+
+  action = body.get("action") or ""
+  if action == "status":
+    return {"ok": True, "admin": True}
+
+  list_result = _handle_admin_list(action, body)
+  if list_result is not None:
+    return list_result
+
+  if action in {"add_admin", "remove_admin"}:
+    user_id = str(body.get("user_id") or "").strip()
+    if not user_id:
+      return {"ok": False, "reply": "أدخل الرقم الجامعي."}
+    reference = db.collection("admins").document(user_id)
+    if action == "add_admin":
+      reference.set({"web_user_id": user_id, "added_by": str(session["user_id"])}, merge=True)
+      return {"ok": True, "reply": "تمت إضافة أدمن الويب."}
+    if user_id in ADMIN_WEB_IDS:
+      return {"ok": False, "reply": "لا يمكن حذف الأدمن الأساسي من الصفحة."}
+    reference.delete()
+    return {"ok": True, "reply": "تم حذف أدمن الويب."}
+
+  collection = body.get("collection") or ""
+  if collection not in {"students", "instructors"}:
+    collection = ""
+  if action in {"add_person", "delete_person"}:
+    user_id = str(body.get("user_id") or "").strip()
+    if not user_id or not collection:
+      return {"ok": False, "reply": "الرقم أو نوع الحساب ناقص."}
+    reference = db.collection(collection).document(user_id)
+    if action == "delete_person":
+      reference.delete()
+      return {"ok": True, "reply": "تم حذف الحساب."}
+    name = str(body.get("name") or "").strip()
+    email = str(body.get("email") or "").strip()
+    if not name or not email:
+      return {"ok": False, "reply": "الاسم والبريد مطلوبان."}
+    data = {"name": name, "email": email, "chat_id": None, "last_active": None}
+    if collection == "instructors":
+      data["courses"] = []
+    reference.set(data, merge=True)
+    return {"ok": True, "reply": "تم حفظ الحساب."}
+
+  if action == "add_course":
+    name = str(body.get("name") or "").strip()
+    folder = str(body.get("folder") or "").strip()
+    if not name or not folder:
+      return {"ok": False, "reply": "اسم المادة والمجلد مطلوبان."}
+    db.collection("courses").document(folder).set({"name": name, "folder": folder, "created_by": str(session["user_id"])})
+    return {"ok": True, "reply": "تمت إضافة المادة."}
+
+  if action == "delete_course":
+    folder = str(body.get("folder") or "").strip()
+    files = list_course_files_with_sha(folder) or []
+    for file in files:
+      github_delete_file(file["path"], file["sha"], f"delete {file['name']}")
+    db.collection("courses").document(folder).delete()
+    return {"ok": True, "reply": "تم حذف المادة وملفاتها."}
+
+  if action == "upload_file":
+    folder = str(body.get("folder") or "").strip()
+    filename = str(body.get("filename") or "").strip()
+    raw = body.get("file_data") or ""
+    if not folder or not filename or not raw:
+      return {"ok": False, "reply": "بيانات الملف ناقصة."}
+    import base64
+    success = github_upload_file(folder, filename, base64.b64decode(raw), f"web admin add {filename}")
+    return {"ok": success, "reply": "تم رفع الملف." if success else "تعذر رفع الملف."}
+
+  if action == "delete_file":
+    path = str(body.get("path") or "").strip()
+    sha = str(body.get("sha") or "").strip()
+    success = bool(path and sha and github_delete_file(path, sha, "web admin delete file"))
+    return {"ok": success, "reply": "تم حذف الملف." if success else "تعذر حذف الملف."}
+
+  return {"ok": False, "reply": "أمر أدمن غير معروف."}
+
+
+def _list_collection(collection_name, limit=100):
+  docs = db.collection(collection_name).stream()
+  result = []
+  for doc in docs:
+    d = doc.to_dict()
+    d["_id"] = doc.id
+    result.append(d)
+    if len(result) >= limit:
+      break
+  return result
+
+
+def _count_collection(collection_name):
+  try:
+    count = 0
+    for _ in db.collection(collection_name).stream():
+      count += 1
+    return count
+  except Exception:
+    return 0
+
+
+def _handle_admin_list(action, body):
+  if action == "list_students":
+    items = _list_collection("students")
+    return {"ok": True, "items": items}
+  if action == "list_instructors":
+    items = _list_collection("instructors")
+    return {"ok": True, "items": items}
+  if action == "list_admins":
+    stored = _list_collection("admins")
+    from config import ADMIN_WEB_IDS
+    bootstrap = [{"_id": uid, "name": "(أساسي)", "email": ""} for uid in ADMIN_WEB_IDS]
+    return {"ok": True, "items": bootstrap + stored}
+  if action == "list_courses":
+    items = _list_collection("courses")
+    return {"ok": True, "items": items}
+  if action == "dashboard":
+    return {
+      "ok": True,
+      "stats": {
+        "students": _count_collection("students"),
+        "instructors": _count_collection("instructors"),
+        "admins": _count_collection("admins"),
+        "courses": _count_collection("courses"),
+        "kb_docs": _count_collection("knowledge_base"),
+      }
+    }
+  return None
 
 
 def _get_session(sid):
@@ -35,12 +181,13 @@ def _get_session(sid):
 
 
 def _ensure_session(sid):
-    s = _get_session(sid)
-    if s:
-        return s
-    sid = uuid.uuid4().hex[:16]
-    _sessions[sid] = {"last": time.time()}
-    return _sessions[sid]
+  s = _get_session(sid)
+  if s:
+    return sid, s
+  sid = uuid.uuid4().hex[:16]
+  s = {"last": time.time()}
+  _sessions[sid] = s
+  return sid, s
 
 
 # ─── API handlers ───────────────────────────────────────────────
@@ -48,14 +195,16 @@ def _ensure_session(sid):
 def handle_chat(body):
     msg = (body.get("message") or "").strip()
     sid = body.get("session_id") or ""
-    _ensure_session(sid)
+    sid, session = _ensure_session(sid)
     if not msg:
         return {"reply": "وضّح سؤالك أكثر؟", "session_id": sid}
     lang = detect_text_language(msg)
-    s = _get_session(sid) or {}
-    chat_id = s.get("chat_id", 0)
+    chat_id = session.get("chat_id", 0)
+    instructor_data = None
+    if session.get("role") == "instructor":
+        _, instructor_data = get_instructor_by_chat_id(chat_id)
     try:
-        reply = asyncio.run(generate_answer(msg, chat_id=chat_id, language=lang))
+        reply = asyncio.run(generate_answer(msg, chat_id=chat_id, instructor_data=instructor_data, language=lang))
     except Exception as e:
         logging.error("Web chat error: %s", e)
         reply = "حصل خطأ تقني. جرب تاني بعد شوية."
@@ -75,14 +224,15 @@ def handle_upload(body):
             return {"reply": "الملف فاضي."}
 
         if not action:
-            s = _get_session(sid) or _ensure_session(sid)
-            s["pending_file"] = {"data": file_b64, "name": name, "mime": mime}
-            return {
-                "reply": f"تم استلام الملف ({name}) ✅ اختر:",
-                "actions": True,
-            }
+          sid, s = _ensure_session(sid)
+          s["pending_file"] = {"data": file_b64, "name": name, "mime": mime}
+          return {
+            "reply": f"تم استلام الملف ({name}) ✅ اختر:",
+            "actions": True,
+            "session_id": sid,
+          }
 
-        s = _get_session(sid) or _ensure_session(sid)
+        sid, s = _ensure_session(sid)
         pf = s.get("pending_file") if not file_b64 else None
 
         if pf:
@@ -157,7 +307,7 @@ def handle_voice(body):
         text = (stt.text or "").strip()
         if not text:
             return {"reply": "ما قدرت أسمع الكلام جيداً. جرب تاني.", "transcribed": ""}
-        s = _get_session(sid) or {}
+        sid, s = _ensure_session(sid)
         chat_id = s.get("chat_id", 0)
         lang = detect_text_language(text)
         reply = asyncio.run(generate_answer(text, chat_id=chat_id, language=lang))
@@ -170,30 +320,35 @@ def handle_voice(body):
 def handle_login_start(body):
     user_id = (body.get("user_id") or "").strip()
     sid = body.get("session_id") or ""
+    sid, _ = _ensure_session(sid)
     if not user_id:
-        return {"reply": "اكتب رقمك الجامعي أو معرف الدكتور.", "step": "ask_id"}
-    for collection, role in (("students", "student"), ("instructors", "instructor")):
+        return {"reply": "اكتب رقمك الجامعي أو معرف الدكتور.", "step": "ask_id", "session_id": sid}
+    collections = (("students", "student"), ("instructors", "instructor"), ("admins", "admin"))
+    for collection, role in collections:
         doc = db.collection(collection).document(user_id).get()
         if doc.exists:
             data = doc.to_dict()
             break
     else:
-        return {"reply": "الرقم غير موجود في قاعدة البيانات.", "step": "ask_id"}
+        return {"reply": "الرقم غير موجود في قاعدة البيانات.", "step": "ask_id", "session_id": sid}
     email = data.get("email", "")
     if not email:
-        return {"reply": "لا يوجد بريد إلكتروني لهذا الحساب.", "step": "ask_id"}
+        return {"reply": "لا يوجد بريد إلكتروني لهذا الحساب.", "step": "ask_id", "session_id": sid}
     code = str(random.randint(100000, 999999))
     _pending_otp[sid] = {
         "code": code, "user_id": user_id, "role": role,
         "email": email, "expires": time.time() + 300,
     }
     try:
-        asyncio.run(send_otp_email(email, code))
+        asyncio.run(asyncio.to_thread(send_otp_email, email, code))
     except Exception:
         logging.exception("OTP email failed")
+        _pending_otp.pop(sid, None)
+        return {"reply": "تعذر إرسال رمز التحقق إلى البريد الإلكتروني.", "step": "done", "session_id": sid}
     return {
         "reply": f"تم إرسال رمز التحقق على بريدك ({email[:3]}***{email[email.rfind('@'):]})\nاكتب الرمز هنا:",
         "step": "ask_otp",
+        "session_id": sid,
     }
 
 
@@ -206,15 +361,25 @@ def handle_login_verify(body):
         return {"reply": "انتهت صلاحية الرمز. ابدأ تسجيل الدخول من جديد.", "step": "done"}
     if code != pending["code"]:
         return {"reply": "الرمز غير صحيح. حاول مرة أخرى:", "step": "ask_otp"}
-    collection = "students" if pending["role"] == "student" else "instructors"
+    collection = {
+      "student": "students",
+      "instructor": "instructors",
+      "admin": "admins",
+    }[pending["role"]]
     db.collection(collection).document(pending["user_id"]).update({
         "chat_id": sid, "last_active": time.time(),
     })
     _pending_otp.pop(sid, None)
-    s = _get_session(sid) or {}
-    s["chat_id"] = int(pending["user_id"])
+    s = _get_session(sid) or _ensure_session(sid)[1]
+    s["chat_id"] = sid
+    s["user_id"] = pending["user_id"]
     s["role"] = pending["role"]
-    return {"reply": "تم تسجيل الدخول بنجاح! ✅", "step": "done"}
+    return {
+      "reply": "تم تسجيل الدخول بنجاح! ✅",
+      "step": "done",
+      "session_id": sid,
+      "admin": _web_admin(s),
+    }
 
 
 def handle_logout(body):
@@ -222,11 +387,18 @@ def handle_logout(body):
     s = _get_session(sid)
     if not s or not s.get("chat_id"):
         return {"reply": "أنت غير مسجل دخول."}
-    for collection in ("students", "instructors"):
-        db.collection(collection).document(str(s["chat_id"])).update({
+    collection = {
+      "student": "students",
+      "instructor": "instructors",
+      "admin": "admins",
+    }.get(s.get("role"))
+    user_id = s.get("user_id")
+    if user_id and collection:
+      db.collection(collection).document(str(user_id)).update({
             "chat_id": None, "last_active": None,
         })
     s.pop("chat_id", None)
+    s.pop("user_id", None)
     s.pop("role", None)
     return {"reply": "تم تسجيل الخروج بنجاح! 👋"}
 
@@ -341,6 +513,41 @@ a{text-decoration:none}
 /* footer */
 .footer{background:var(--b);color:#fff;text-align:center;padding:14px 24px;font-size:12px;opacity:.9}
 
+/* admin panel */
+.admin-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;justify-content:center;align-items:flex-start;padding-top:30px}
+.admin-overlay.show{display:flex}
+.admin-panel{background:#fff;border-radius:16px;width:95%;max-width:900px;max-height:85vh;overflow:hidden;box-shadow:0 16px 48px rgba(0,0,0,.25);display:flex;flex-direction:column}
+.admin-header{background:var(--b);color:#fff;padding:14px 20px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
+.admin-header h3{font-size:16px;font-weight:600}
+.admin-header button{background:rgba(255,255,255,.15);color:#fff;border:none;padding:6px 16px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:12px}
+.admin-tabs{display:flex;border-bottom:2px solid #e0e0e0;flex-shrink:0;overflow-x:auto}
+.admin-tabs button{flex:1;padding:10px 12px;border:none;background:#f5f5f5;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;color:#666;border-bottom:2px solid transparent;transition:all .2s;white-space:nowrap}
+.admin-tabs button.active{background:#fff;color:var(--b);border-bottom-color:var(--r)}
+.admin-tabs button:hover{background:#e8eaf6}
+.admin-body{flex:1;overflow-y:auto;padding:16px 20px}
+.admin-body .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px}
+.admin-body .stat-card{background:linear-gradient(135deg,var(--b),var(--bl));color:#fff;padding:16px;border-radius:12px;text-align:center}
+.admin-body .stat-card .num{font-size:28px;font-weight:700}
+.admin-body .stat-card .lbl{font-size:11px;opacity:.85;margin-top:4px}
+.admin-table{width:100%;border-collapse:collapse;font-size:12px}
+.admin-table th{background:#e8eaf6;color:var(--b);padding:8px 10px;text-align:right;font-weight:600;position:sticky;top:0}
+.admin-table td{padding:7px 10px;border-bottom:1px solid #f0f0f0;text-align:right}
+.admin-table tr:hover{background:#f5f8ff}
+.admin-table .del-btn{background:#f44336;color:#fff;border:none;padding:3px 10px;border-radius:8px;cursor:pointer;font-size:11px;font-family:inherit}
+.admin-table .del-btn:hover{background:#c62828}
+.admin-form{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px;padding:12px;background:#f5f8ff;border-radius:10px}
+.admin-form input,.admin-form select{padding:8px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:12px;font-family:inherit;outline:none}
+.admin-form input:focus{border-color:var(--b)}
+.admin-form button{padding:8px 18px;border:none;border-radius:8px;background:var(--r);color:#fff;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit}
+.admin-form button:hover{background:#b8070f}
+.admin-form .add-btn{background:#4CAF50}.admin-form .add-btn:hover{background:#388E3C}
+.admin-empty{text-align:center;color:#999;padding:30px;font-size:13px}
+.admin-msg{padding:8px 14px;border-radius:8px;font-size:12px;margin-bottom:10px}
+.admin-msg.ok{background:#e8f5e9;color:#2e7d32}
+.admin-msg.err{background:#fce4ec;color:#c62828}
+
+@media(max-width:600px){.admin-panel{width:100%;max-height:95vh}.admin-tabs button{font-size:11px;padding:8px 6px}}
+
 @media(max-width:600px){
   .topbar,.nav-links{display:none}
   .hero h1{font-size:20px}.chat-main{padding:10px 6px 16px}
@@ -385,6 +592,7 @@ a{text-decoration:none}
   <div class="user-bar" id="userBar">
     <span id="userLabel">زائر</span>
     <button class="login-btn" id="loginBtn" onclick="showLogin()"><i class="fas fa-sign-in-alt"></i> تسجيل الدخول</button>
+    <button class="login-btn" id="adminBtn" onclick="adminMenu()" style="display:none;background:#000067"><i class="fas fa-user-shield"></i> لوحة الأدمن</button>
   </div>
 
   <div class="msgs" id="msgs">
@@ -437,6 +645,24 @@ a{text-decoration:none}
   </div>
 </div>
 
+<!-- Admin Panel Modal -->
+<div class="admin-overlay" id="adminOverlay">
+  <div class="admin-panel">
+    <div class="admin-header">
+      <h3><i class="fas fa-user-shield"></i> لوحة تحكم الأدمن</h3>
+      <button onclick="closeAdminPanel()"><i class="fas fa-times"></i> إغلاق</button>
+    </div>
+    <div class="admin-tabs" id="adminTabs">
+      <button class="active" data-tab="dashboard" onclick="switchAdminTab('dashboard',this)">الرئيسية</button>
+      <button data-tab="students" onclick="switchAdminTab('students',this)">الطلاب</button>
+      <button data-tab="instructors" onclick="switchAdminTab('instructors',this)">الدكاترة</button>
+      <button data-tab="admins" onclick="switchAdminTab('admins',this)">الأدمن</button>
+      <button data-tab="courses" onclick="switchAdminTab('courses',this)">المقررات</button>
+    </div>
+    <div class="admin-body" id="adminBody"></div>
+  </div>
+</div>
+
 <div class="footer">University of Science and Technology &copy; 2025 &mdash; <a href="https://ust.edu.sd">ust.edu.sd</a></div>
 
 <script>
@@ -446,7 +672,7 @@ var msgs=document.getElementById('msgs'),inp=document.getElementById('inp'),
     quick=document.getElementById('quick'),micBtn=document.getElementById('micBtn'),
     actionRow=document.getElementById('actionRow'),userLabel=document.getElementById('userLabel'),
     userBar=document.getElementById('userBar'),loginBtn=document.getElementById('loginBtn'),
-    statusText=document.getElementById('statusText');
+    statusText=document.getElementById('statusText'),adminBtn=document.getElementById('adminBtn');
 var sid=localStorage.getItem('ust_sid');
 if(!sid){sid=crypto.randomUUID?crypto.randomUUID():Math.random().toString(36).slice(2);localStorage.setItem('ust_sid',sid)}
 var pendingFile=null;
@@ -591,11 +817,169 @@ window.loginVerify=function(){
         isLoggedIn=true;
         userLabel.innerHTML='<i class="fas fa-user-check"></i> مسجل الدخول';
         loginBtn.style.display='none';
+        if(d.admin)adminBtn.style.display='inline-block';
       }
     }else{
       document.getElementById('loginError').textContent=d.reply;
     }
   }).catch(function(){document.getElementById('loginBtn2').disabled=false});
+};
+
+window.adminMenu=function(){
+  document.getElementById('adminOverlay').classList.add('show');
+  loadAdminTab('dashboard');
+};
+window.closeAdminPanel=function(){
+  document.getElementById('adminOverlay').classList.remove('show');
+};
+var _adminTabLoaded={};
+window.switchAdminTab=function(tab,btn){
+  document.querySelectorAll('#adminTabs button').forEach(function(b){b.classList.remove('active')});
+  btn.classList.add('active');
+  _adminTabLoaded={};
+  loadAdminTab(tab);
+};
+function adminApi(body){
+  return fetch('/api/admin',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(Object.assign({session_id:sid},body))})
+    .then(function(r){return r.json()});
+}
+function renderAdminMsg(container,text,isErr){
+  var m=document.createElement('div');m.className='admin-msg '+(isErr?'err':'ok');m.textContent=text;
+  container.insertBefore(m,container.firstChild);
+  setTimeout(function(){m.remove()},4000);
+}
+function loadAdminTab(tab){
+  var body=document.getElementById('adminBody');
+  if(tab==='dashboard')loadDashboard(body);
+  else if(tab==='students')loadPersonList(body,'students','الطلاب');
+  else if(tab==='instructors')loadPersonList(body,'instructors','الدكاترة');
+  else if(tab==='admins')loadAdminList(body);
+  else if(tab==='courses')loadCourseList(body);
+}
+function loadDashboard(el){
+  adminApi({action:'dashboard'}).then(function(d){
+    if(!d.ok){el.innerHTML='<p class="admin-empty">خطأ</p>';return}
+    var s=d.stats;
+    el.innerHTML='<div class="stats">'
+      +'<div class="stat-card"><div class="num">'+s.students+'</div><div class="lbl">طالب</div></div>'
+      +'<div class="stat-card"><div class="num">'+s.instructors+'</div><div class="lbl">دكتور</div></div>'
+      +'<div class="stat-card"><div class="num">'+s.admins+'</div><div class="lbl">أدمن</div></div>'
+      +'<div class="stat-card"><div class="num">'+s.courses+'</div><div class="lbl">مادة</div></div>'
+      +'<div class="stat-card"><div class="num">'+s.kb_docs+'</div><div class="lbl">معلومة KB</div></div>'
+      +'</div>';
+  });
+}
+function loadPersonList(el,collection,title){
+  el.innerHTML='<div style="text-align:center;padding:20px">جاري التحميل...</div>';
+  adminApi({action:'list_'+(collection==='students'?'students':'instructors')}).then(function(d){
+    var html='<div class="admin-form">'
+      +'<input type="text" id="af_id" placeholder="الرقم الجامعي">'
+      +'<input type="text" id="af_name" placeholder="الاسم">'
+      +'<input type="email" id="af_email" placeholder="البريد الإلكتروني">'
+      +'<button class="add-btn" onclick="addPerson(\''+collection+'\')">إضافة '+title+'</button>'
+      +'</div><div id="adminMsg_'+collection+'"></div>';
+    if(!d.items||d.items.length===0){html+='<p class="admin-empty">لا يوجد '+title+' مسجلين.</p>';}
+    else{
+      html+='<table class="admin-table"><thead><tr><th>الرقم</th><th>الاسم</th><th>البريد</th><th>الحالة</th><th></th></tr></thead><tbody>';
+      d.items.forEach(function(p){
+        var status=p.chat_id?'<span style="color:#4CAF50">متصل</span>':'غير متصل';
+        html+='<tr><td>'+p._id+'</td><td>'+(p.name||'-')+'</td><td>'+(p.email||'-')+'</td><td>'+status+'</td>'
+          +'<td><button class="del-btn" onclick="deletePerson(\''+collection+'\',\''+p._id+'\')">حذف</button></td></tr>';
+      });
+      html+='</tbody></table>';
+    }
+    el.innerHTML=html;
+  });
+}
+window.addPerson=function(collection){
+  var uid=document.getElementById('af_id').value.trim();
+  var name=document.getElementById('af_name').value.trim();
+  var email=document.getElementById('af_email').value.trim();
+  if(!uid||!name||!email){alert('أدخل الرقم والاسم والبريد');return;}
+  adminApi({action:'add_person',collection:collection,user_id:uid,name:name,email:email}).then(function(d){
+    var msgEl=document.getElementById('adminMsg_'+collection);
+    if(msgEl)renderAdminMsg(msgEl,d.reply,!d.ok);
+    if(d.ok){loadPersonList(document.getElementById('adminBody'),collection,collection==='students'?'الطلاب':'الدكاترة');}
+  });
+};
+window.deletePerson=function(collection,id){
+  if(!confirm('هل أنت متأكد من حذف '+id+'؟'))return;
+  adminApi({action:'delete_person',collection:collection,user_id:id}).then(function(d){
+    var msgEl=document.getElementById('adminMsg_'+collection);
+    if(msgEl)renderAdminMsg(msgEl,d.reply,!d.ok);
+    if(d.ok){loadPersonList(document.getElementById('adminBody'),collection,collection==='students'?'الطلاب':'الدكاترة');}
+  });
+};
+function loadAdminList(el){
+  el.innerHTML='<div style="text-align:center;padding:20px">جاري التحميل...</div>';
+  adminApi({action:'list_admins'}).then(function(d){
+    var html='<div class="admin-form">'
+      +'<input type="text" id="af_admin_id" placeholder="الرقم الجامعي">'
+      +'<button class="add-btn" onclick="addAdminW()">إضافة أدمن</button>'
+      +'</div><div id="adminMsg_admins"></div>';
+    if(!d.items||d.items.length===0){html+='<p class="admin-empty">لا يوجد أدمن.</p>';}
+    else{
+      html+='<table class="admin-table"><thead><tr><th>المعرف</th><th>الاسم</th><th></th></tr></thead><tbody>';
+      d.items.forEach(function(a){
+        var del=a.name==='(أساسي)'?'':'<button class="del-btn" onclick="removeAdminW(\''+a._id+'\')">حذف</button>';
+        html+='<tr><td>'+a._id+'</td><td>'+(a.name||'-')+'</td><td>'+del+'</td></tr>';
+      });
+      html+='</tbody></table>';
+    }
+    el.innerHTML=html;
+  });
+}
+window.addAdminW=function(){
+  var uid=document.getElementById('af_admin_id').value.trim();
+  if(!uid){alert('أدخل الرقم');return;}
+  adminApi({action:'add_admin',user_id:uid}).then(function(d){
+    renderAdminMsg(document.getElementById('adminMsg_admins'),d.reply,!d.ok);
+    if(d.ok)loadAdminList(document.getElementById('adminBody'));
+  });
+};
+window.removeAdminW=function(id){
+  if(!confirm('حذف الأدمن '+id+'؟'))return;
+  adminApi({action:'remove_admin',user_id:id}).then(function(d){
+    renderAdminMsg(document.getElementById('adminMsg_admins'),d.reply,!d.ok);
+    if(d.ok)loadAdminList(document.getElementById('adminBody'));
+  });
+};
+function loadCourseList(el){
+  el.innerHTML='<div style="text-align:center;padding:20px">جاري التحميل...</div>';
+  adminApi({action:'list_courses'}).then(function(d){
+    var html='<div class="admin-form">'
+      +'<input type="text" id="cf_name" placeholder="اسم المادة">'
+      +'<input type="text" id="cf_folder" placeholder="اسم المجلد (EN)">'
+      +'<button class="add-btn" onclick="addCourseW()">إضافة مادة</button>'
+      +'</div><div id="adminMsg_courses"></div>';
+    if(!d.items||d.items.length===0){html+='<p class="admin-empty">لا توجد مقررات.</p>';}
+    else{
+      html+='<table class="admin-table"><thead><tr><th>المجلد</th><th>الاسم</th><th></th></tr></thead><tbody>';
+      d.items.forEach(function(c){
+        html+='<tr><td>'+c._id+'</td><td>'+(c.name||'-')+'</td>'
+          +'<td><button class="del-btn" onclick="deleteCourseW(\''+c._id+'\')">حذف</button></td></tr>';
+      });
+      html+='</tbody></table>';
+    }
+    el.innerHTML=html;
+  });
+}
+window.addCourseW=function(){
+  var name=document.getElementById('cf_name').value.trim();
+  var folder=document.getElementById('cf_folder').value.trim();
+  if(!name||!folder){alert('أدخل اسم المادة والمجلد');return;}
+  adminApi({action:'add_course',name:name,folder:folder}).then(function(d){
+    renderAdminMsg(document.getElementById('adminMsg_courses'),d.reply,!d.ok);
+    if(d.ok)loadCourseList(document.getElementById('adminBody'));
+  });
+};
+window.deleteCourseW=function(folder){
+  if(!confirm('حذف المادة '+folder+' وملفاتها؟'))return;
+  adminApi({action:'delete_course',folder:folder}).then(function(d){
+    renderAdminMsg(document.getElementById('adminMsg_courses'),d.reply,!d.ok);
+    if(d.ok)loadCourseList(document.getElementById('adminBody'));
+  });
 };
 })();
 </script>
