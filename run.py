@@ -25,16 +25,17 @@ def main():
     from whatsapp_bot import main as run_whatsapp
     from main import main as run_telegram
 
-    threads = [
-        threading.Thread(target=_run_thread, args=(run_whatsapp, "whatsapp"),
-                         name="whatsapp", daemon=False),
-        threading.Thread(target=_run_thread, args=(run_telegram, "telegram"),
-                         name="telegram", daemon=False),
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    # WhatsApp runs in a background thread (plain HTTP server — no signal handlers).
+    # Telegram MUST run in the main thread: python-telegram-bot's asyncio runtime
+    # calls add_signal_handler, which only works in the main thread of the main
+    # interpreter (fails on Linux/Render otherwise).
+    whatsapp_thread = threading.Thread(target=_run_thread, args=(run_whatsapp, "whatsapp"),
+                                       name="whatsapp", daemon=False)
+    whatsapp_thread.start()
+    try:
+        run_telegram()
+    except Exception:
+        logging.exception("telegram thread crashed")
 
 
 if __name__ == "__main__":
