@@ -1,12 +1,7 @@
-"""WhatsApp Business Cloud API bot - يعمل بجانب بوت التيليجرام بنفس المنطق.
-
-التشغيل:  python whatsapp_bot.py
-المطلوب في .env: WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_VERIFY_TOKEN
-الـ Webhook: اعرض المنفذ (الافتراضي 8445) عبر ngrok وضعه في Meta Developers.
-"""
 import asyncio
 import json
 import logging
+import os
 import secrets
 import threading
 import time
@@ -19,27 +14,68 @@ from firebase_admin import firestore
 from google.genai import types
 
 from config import (
-    client, db, MODEL_NAME,
-    WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_VERIFY_TOKEN,
-    WHATSAPP_API_VERSION, WHATSAPP_PORT, ADMIN_WHATSAPP_NUMBERS,
+    client,
+    db,
+    MODEL_NAME,
+    WHATSAPP_TOKEN,
+    WHATSAPP_PHONE_NUMBER_ID,
+    WHATSAPP_VERIFY_TOKEN,
+    WHATSAPP_API_VERSION,
+    WHATSAPP_PORT,
+    ADMIN_WHATSAPP_NUMBERS,
 )
-from database import get_student_by_chat_id, get_instructor_by_chat_id, set_chat_language, was_welcome_sent, mark_welcome_sent, save_pending_upload, get_pending_upload, clear_pending_upload
+
+from database import (
+    get_student_by_chat_id,
+    get_instructor_by_chat_id,
+    set_chat_language,
+    was_welcome_sent,
+    mark_welcome_sent,
+    save_pending_upload,
+    get_pending_upload,
+    clear_pending_upload,
+)
+
 from gemini_services import (
-    call_gemini_with_retry, detect_user_intent, generate_answer,
-    parse_language_toggle, get_effective_language,
+    call_gemini_with_retry,
+    detect_user_intent,
+    generate_answer,
+    parse_language_toggle,
+    get_effective_language,
 )
+
 from github_utils import (
-    list_course_files_with_sha, github_upload_file, github_delete_file,
-    download_file_bytes, slugify_course_name,
+    list_course_files_with_sha,
+    github_upload_file,
+    github_delete_file,
+    download_file_bytes,
+    slugify_course_name,
 )
-from utils import send_otp_email, extract_pdf_text
+
+from utils import (
+    send_otp_email,
+    extract_pdf_text,
+)
+
 from handlers.admin import is_stored_admin
 from handlers.courses import _all_courses
 from handlers.general import _handle_admin_command
 
+
+# ============================================================
+# WhatsApp API
+# ============================================================
+
 WA_BASE = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}"
-WA_MSG_URL = f"{WA_BASE}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
-WA_HEADERS = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+
+WA_MSG_URL = (
+    f"{WA_BASE}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+)
+
+WA_HEADERS = {
+    "Authorization": f"Bearer {WHATSAPP_TOKEN}"
+}
+
 
 _inbound_phone_id = None
 
@@ -59,34 +95,65 @@ def _msg_url():
 def _media_url():
     return f"{_base()}/{_active_phone_id()}/media"
 
+
+# ============================================================
+# State
+# ============================================================
+
 _state_lock = threading.Lock()
+
 _wa_state = {}
 
 
 def _get_state(phone):
     with _state_lock:
-        return _wa_state.setdefault(phone, {
-            "state": None, "data": {}, "last_file": None,
-            "pending_files": [], "welcome_sent": False,
-        })
+        return _wa_state.setdefault(
+            phone,
+            {
+                "state": None,
+                "data": {},
+                "last_file": None,
+                "pending_files": [],
+                "welcome_sent": False,
+            },
+        )
 
 
 def _reset_state(phone):
     with _state_lock:
         old = _wa_state.get(phone, {})
+
         _wa_state[phone] = {
-            "state": None, "data": {}, "last_file": old.get("last_file"),
-            "pending_files": [], "welcome_sent": old.get("welcome_sent", True),
+            "state": None,
+            "data": {},
+            "last_file": old.get("last_file"),
+            "pending_files": [],
+            "welcome_sent": old.get("welcome_sent", True),
         }
 
 
-# ---------------------------------------------------------------- إرسال
+# ============================================================
+# إرسال رسائل WhatsApp
+# ============================================================
+
 def wa_send(payload):
     try:
-        response = requests.post(_msg_url(), headers=WA_HEADERS, json=payload, timeout=30)
+        response = requests.post(
+            _msg_url(),
+            headers=WA_HEADERS,
+            json=payload,
+            timeout=30,
+        )
+
         if response.status_code not in (200, 201):
-            logging.error("WhatsApp send failed (%s): %s", response.status_code, response.text[:500])
+            logging.error(
+                "WhatsApp send failed (%s): %s",
+                response.status_code,
+                response.text[:500],
+            )
+
         return response
+
     except Exception:
         logging.exception("WhatsApp send error")
         return None
@@ -94,40 +161,138 @@ def wa_send(payload):
 
 def send_text(to, body):
     text = str(body)[:4000]
-    return wa_send({"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text, "preview_url": False}})
+
+    return wa_send(
+        {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "text",
+            "text": {
+                "body": text,
+                "preview_url": False,
+            },
+        }
+    )
 
 
 def send_buttons(to, body, buttons):
-    rows = [{"type": "reply", "reply": {"id": b_id, "title": b_title[:20]}} for b_id, b_title in buttons[:3]]
+    rows = [
+        {
+            "type": "reply",
+            "reply": {
+                "id": b_id,
+                "title": b_title[:20],
+            },
+        }
+        for b_id, b_title in buttons[:3]
+    ]
+
     if not rows:
         return None
-    return wa_send({"messaging_product": "whatsapp", "to": to, "type": "interactive",
-                    "interactive": {"type": "button", "body": {"text": str(body)[:1024]},
-                                    "action": {"buttons": rows}}})
+
+    return wa_send(
+        {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "body": {
+                    "text": str(body)[:1024],
+                },
+                "action": {
+                    "buttons": rows,
+                },
+            },
+        }
+    )
 
 
-def send_list(to, body, items, header="", button_text="اختر"):
-    rows = [{"id": r_id[:256], "title": r_title[:24], "description": (r_desc or "")[:72]}
-            for r_id, r_title, r_desc in items]
+def send_list(
+    to,
+    body,
+    items,
+    header="",
+    button_text="اختر",
+):
+    rows = [
+        {
+            "id": r_id[:256],
+            "title": r_title[:24],
+            "description": (r_desc or "")[:72],
+        }
+        for r_id, r_title, r_desc in items
+    ]
+
     if not rows:
         return None
-    sections = [{"title": f"الخيارات ({i // 10 + 1})", "rows": rows[i:i + 10]} for i in range(0, len(rows), 10)]
-    return wa_send({"messaging_product": "whatsapp", "to": to, "type": "interactive",
-                    "interactive": {"type": "list", "header": {"type": "text", "text": str(header)[:60]},
-                                    "body": {"text": str(body)[:1024]},
-                                    "action": {"button": str(button_text)[:20], "sections": sections}}})
 
+    sections = [
+        {
+            "title": f"الخيارات ({i // 10 + 1})",
+            "rows": rows[i:i + 10],
+        }
+        for i in range(0, len(rows), 10)
+    ]
+
+    return wa_send(
+        {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "interactive",
+            "interactive": {
+                "type": "list",
+                "header": {
+                    "type": "text",
+                    "text": str(header)[:60],
+                },
+                "body": {
+                    "text": str(body)[:1024],
+                },
+                "action": {
+                    "button": str(button_text)[:20],
+                    "sections": sections,
+                },
+            },
+        }
+    )
+
+
+# ============================================================
+# Media
+# ============================================================
 
 def upload_media(data, mime, filename):
     url = _media_url()
+
     try:
-        response = requests.post(url, headers=WA_HEADERS,
-                                 files={"file": (filename, data, mime)},
-                                 data={"messaging_product": "whatsapp", "type": mime}, timeout=120)
+        response = requests.post(
+            url,
+            headers=WA_HEADERS,
+            files={
+                "file": (
+                    filename,
+                    data,
+                    mime,
+                )
+            },
+            data={
+                "messaging_product": "whatsapp",
+                "type": mime,
+            },
+            timeout=120,
+        )
+
         if response.status_code != 200:
-            logging.error("Media upload failed (%s): %s", response.status_code, response.text[:500])
+            logging.error(
+                "Media upload failed (%s): %s",
+                response.status_code,
+                response.text[:500],
+            )
             return None
+
         return (response.json() or {}).get("id")
+
     except Exception:
         logging.exception("Media upload error")
         return None
@@ -135,8 +300,18 @@ def upload_media(data, mime, filename):
 
 def get_media_info(media_id):
     try:
-        response = requests.get(f"{WA_BASE}/{media_id}", headers=WA_HEADERS, timeout=30)
-        return response.json() if response.status_code == 200 else None
+        response = requests.get(
+            f"{WA_BASE}/{media_id}",
+            headers=WA_HEADERS,
+            timeout=30,
+        )
+
+        return (
+            response.json()
+            if response.status_code == 200
+            else None
+        )
+
     except Exception:
         logging.exception("Media info error")
         return None
@@ -144,109 +319,242 @@ def get_media_info(media_id):
 
 def download_media(media_id):
     info = get_media_info(media_id)
+
     if not info or not info.get("url"):
         return None, None
+
     try:
-        response = requests.get(info["url"], headers=WA_HEADERS, timeout=120)
+        response = requests.get(
+            info["url"],
+            headers=WA_HEADERS,
+            timeout=120,
+        )
+
         if response.status_code != 200:
             return None, info.get("mime_type")
-        return response.content, info.get("mime_type")
+
+        return (
+            response.content,
+            info.get("mime_type"),
+        )
+
     except Exception:
         logging.exception("Media download error")
         return None, None
 
 
 def send_document(to, media_id, filename):
-    return wa_send({"messaging_product": "whatsapp", "to": to, "type": "document",
-                    "document": {"id": media_id, "filename": filename[:240]}})
+    return wa_send(
+        {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "document",
+            "document": {
+                "id": media_id,
+                "filename": filename[:240],
+            },
+        }
+    )
 
 
 def _guess_mime(filename):
-    ext = (filename or "").rsplit(".", 1)[-1].lower()
+    ext = (
+        (filename or "")
+        .rsplit(".", 1)[-1]
+        .lower()
+    )
+
     return {
-        "pdf": "application/pdf", "doc": "application/msword",
-        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "pdf": "application/pdf",
+        "doc": "application/msword",
+        "docx": (
+            "application/vnd.openxmlformats-officedocument."
+            "wordprocessingml.document"
+        ),
         "ppt": "application/vnd.ms-powerpoint",
-        "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "pptx": (
+            "application/vnd.openxmlformats-officedocument."
+            "presentationml.presentation"
+        ),
         "xls": "application/vnd.ms-excel",
-        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "zip": "application/zip", "png": "image/png", "jpg": "image/jpeg",
-        "jpeg": "image/jpeg", "gif": "image/gif", "mp3": "audio/mpeg",
-    }.get(ext, "application/octet-stream")
+        "xlsx": (
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        "zip": "application/zip",
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "gif": "image/gif",
+        "mp3": "audio/mpeg",
+    }.get(
+        ext,
+        "application/octet-stream",
+    )
 
 
 def send_file_from_github(to, file):
     try:
         data = download_file_bytes(file["path"])
+
         if not data:
-            send_text(to, "تعذر تحميل الملف من المستودع.")
+            send_text(
+                to,
+                "تعذر تحميل الملف من المستودع.",
+            )
             return
-        media_id = upload_media(data, _guess_mime(file["name"]), file["name"])
+
+        media_id = upload_media(
+            data,
+            _guess_mime(file["name"]),
+            file["name"],
+        )
+
         if not media_id:
-            send_text(to, "تعذر رفع الملف إلى واتساب.")
+            send_text(
+                to,
+                "تعذر رفع الملف إلى واتساب.",
+            )
             return
-        send_document(to, media_id, file["name"])
+
+        send_document(
+            to,
+            media_id,
+            file["name"],
+        )
+
     except Exception:
-        logging.exception("WhatsApp file send failed")
-        send_text(to, "تعذر إرسال الملف الآن.")
+        logging.exception(
+            "WhatsApp file send failed"
+        )
+        send_text(
+            to,
+            "تعذر إرسال الملف الآن.",
+        )
 
 
-# ---------------------------------------------------------------- قائمة/مساعدة
+# ============================================================
+# Help / Main Menu
+# ============================================================
+
 def wa_help(phone):
-    send_text(phone, (
-        "🎓 بوت خدمات الجامعة\n\n"
-        "💬 اسألني أي سؤال عن الجامعة.\n"
-        "📚 المقررات والشيتات (للمسجلين).\n"
-        "📄 أرسل ملفاً وسألخصه أو أترجمه.\n"
-        "🎙️ أرسل صوتاً وسأحوّله لنص.\n\n"
-        "🔑 سجّل الدخول لفتح الشيتات.\n\n"
-        "─── أوامر الأدمن ───\n"
-        "أضف طالب <المعرف> <البريد> <الاسم>\n"
-        "مثال: أضف طالب 123456789 ali@uni.edu.sd علي\n\n"
-        "أضف دكتور <المعرف> <البريد> <الاسم>\n"
-        "مثال: أضف دكتور 987654321 omar@uni.edu.sd عمر\n\n"
-        "احذف طالب <المعرف>\n"
-        "احذف دكتور <المعرف>\n\n"
-        "اعرض الطلاب أو عرض الأساتذة"
-    ))
+    send_text(
+        phone,
+        (
+            "🎓 بوت خدمات الجامعة\n\n"
+            "💬 اسألني أي سؤال عن الجامعة.\n"
+            "📚 المقررات والشيتات (للمسجلين).\n"
+            "📄 أرسل ملفاً وسألخصه أو أترجمه.\n"
+            "🎙️ أرسل صوتاً وسأحوّله لنص.\n\n"
+            "🔑 سجّل الدخول لفتح الشيتات.\n\n"
+            "─── أوامر الأدمن ───\n"
+            "أضف طالب <المعرف> <البريد> <الاسم>\n"
+            "مثال: أضف طالب 123456789 ali@uni.edu.sd علي\n\n"
+            "أضف دكتور <المعرف> <البريد> <الاسم>\n"
+            "مثال: أضف دكتور 987654321 omar@uni.edu.sd عمر\n\n"
+            "احذف طالب <المعرف>\n"
+            "احذف دكتور <المعرف>\n\n"
+            "اعرض الطلاب أو عرض الأساتذة"
+        ),
+    )
 
 
 def wa_show_main_menu(phone):
     items = [
-        ("menu:ask", "اسألني سؤالاً", "أي سؤال عن الجامعة"),
-        ("menu:courses", "المقررات", "عرض المقررات المتاحة"),
-        ("menu:sheets", "الشيتات", "اختر مادة لعرض ملفاتها"),
-        ("menu:upload", "رفع ملف", "تلخيص أو ترجمة ملف"),
-        ("menu:admin", "إدارة المحتوى", "للدكاترة والأدمن"),
+        (
+            "menu:ask",
+            "اسألني سؤالاً",
+            "أي سؤال عن الجامعة",
+        ),
+        (
+            "menu:courses",
+            "المقررات",
+            "عرض المقررات المتاحة",
+        ),
+        (
+            "menu:sheets",
+            "الشيتات",
+            "اختر مادة لعرض ملفاتها",
+        ),
+        (
+            "menu:upload",
+            "رفع ملف",
+            "تلخيص أو ترجمة ملف",
+        ),
+        (
+            "menu:admin",
+            "إدارة المحتوى",
+            "للدكاترة والأدمن",
+        ),
     ]
-    send_list(phone, "اختر خدمة:", items, header="القائمة الرئيسية")
+
+    send_list(
+        phone,
+        "اختر خدمة:",
+        items,
+        header="القائمة الرئيسية",
+    )
 
 
 async def wa_menu_action(phone, action):
     if action == "ask":
-        send_text(phone, "اكتب سؤالك مباشرة وسأجيبك.")
+        send_text(
+            phone,
+            "اكتب سؤالك مباشرة وسأجيبك.",
+        )
         return
+
     if action == "courses":
         await wa_show_courses(phone)
         return
+
     if action == "sheets":
-        await route_text(phone, "الشيتات")
+        await route_text(
+            phone,
+            "الشيتات",
+        )
         return
+
     if action == "upload":
-        send_text(phone, "أرسل الملف الآن، وسأسألك: تلخيص أم ترجمة؟")
+        send_text(
+            phone,
+            "أرسل الملف الآن، وسأسألك: تلخيص أم ترجمة؟",
+        )
         return
+
     if action == "admin":
-        instructor_id, _ = await asyncio.to_thread(get_instructor_by_chat_id, "wa:" + phone)
+        instructor_id, _ = await asyncio.to_thread(
+            get_instructor_by_chat_id,
+            "wa:" + phone,
+        )
+
         if instructor_id or wa_is_admin(phone):
-            send_buttons(phone, "اختر:", [("admin:add", "إضافة محتوى"), ("admin:delete", "حذف محتوى")])
+            send_buttons(
+                phone,
+                "اختر:",
+                [
+                    ("admin:add", "إضافة محتوى"),
+                    ("admin:delete", "حذف محتوى"),
+                ],
+            )
         else:
-            send_text(phone, "هذه الخدمة لأعضاء هيئة التدريس أو الأدمن فقط.")
+            send_text(
+                phone,
+                "هذه الخدمة لأعضاء هيئة التدريس أو الأدمن فقط.",
+            )
+
         return
 
 
-# ---------------------------------------------------------------- أدمن
+# ============================================================
+# Admin
+# ============================================================
+
 def wa_is_admin(phone):
-    return phone in ADMIN_WHATSAPP_NUMBERS or is_stored_admin(phone)
+    return (
+        phone in ADMIN_WHATSAPP_NUMBERS
+        or is_stored_admin(phone)
+    )
 
 
 def _phone_int(phone):
@@ -257,706 +565,2088 @@ def _phone_int(phone):
 
 
 def _make_update(phone):
-    message = SimpleNamespace(reply_text=lambda t, **kw: send_text(phone, t))
+    message = SimpleNamespace(
+        reply_text=lambda t, **kw: send_text(
+            phone,
+            t,
+        )
+    )
+
     return SimpleNamespace(
-        effective_user=SimpleNamespace(id=_phone_int(phone), full_name=""),
-        effective_chat=SimpleNamespace(id="wa:" + phone),
+        effective_user=SimpleNamespace(
+            id=_phone_int(phone),
+            full_name="",
+        ),
+        effective_chat=SimpleNamespace(
+            id="wa:" + phone,
+        ),
         effective_message=message,
     )
 
 
-# ---------------------------------------------------------------- دخول
+# ============================================================
+# Login
+# ============================================================
+
 def start_login(phone):
-    send_text(phone, "اكتب رقمك الجامعي أو معرف الدكتور:")
+    send_text(
+        phone,
+        "اكتب رقمك الجامعي أو معرف الدكتور:",
+    )
+
     _get_state(phone)["state"] = "LOGIN_ASK_ID"
 
 
 async def handle_login_id(phone, user_id):
     user_id = user_id.strip()
-    for collection, role in (("students", "student"), ("instructors", "instructor")):
-        doc = await asyncio.to_thread(db.collection(collection).document(user_id).get)
+
+    for collection, role in (
+        ("students", "student"),
+        ("instructors", "instructor"),
+    ):
+        doc = await asyncio.to_thread(
+            db.collection(collection)
+            .document(user_id)
+            .get
+        )
+
         if doc.exists:
             data = doc.to_dict()
             break
+
     else:
-        send_text(phone, "الرقم غير موجود.")
+        send_text(
+            phone,
+            "الرقم غير موجود.",
+        )
         _reset_state(phone)
         return
+
     if not data.get("email"):
-        send_text(phone, "لا يوجد بريد إلكتروني لهذا الحساب.")
+        send_text(
+            phone,
+            "لا يوجد بريد إلكتروني لهذا الحساب.",
+        )
         _reset_state(phone)
         return
-    code = str(secrets.randbelow(900000) + 100000)
+
+    code = str(
+        secrets.randbelow(900000) + 100000
+    )
+
     try:
-        await asyncio.to_thread(send_otp_email, data["email"], code)
+        await asyncio.to_thread(
+            send_otp_email,
+            data["email"],
+            code,
+        )
+
     except Exception:
         _reset_state(phone)
-        logging.exception("Unable to send OTP email")
-        send_text(phone, "تعذر إرسال رمز التحقق إلى البريد الإلكتروني.")
+
+        logging.exception(
+            "Unable to send OTP email"
+        )
+
+        send_text(
+            phone,
+            "تعذر إرسال رمز التحقق إلى البريد الإلكتروني.",
+        )
         return
+
     state = _get_state(phone)
-    state["data"] = {"code": code, "user_id": user_id, "role": role, "expires": time.time() + 300}
+
+    state["data"] = {
+        "code": code,
+        "user_id": user_id,
+        "role": role,
+        "expires": time.time() + 300,
+    }
+
     state["state"] = "LOGIN_ASK_OTP"
-    send_text(phone, "تم إرسال رمز التحقق إلى بريدك الإلكتروني. اكتبه هنا خلال 5 دقائق:")
+
+    send_text(
+        phone,
+        "تم إرسال رمز التحقق إلى بريدك الإلكتروني. "
+        "اكتبه هنا خلال 5 دقائق:",
+    )
 
 
 async def handle_login_otp(phone, otp):
     state = _get_state(phone)
+
     pending = state.get("data") or {}
-    if not pending or time.time() > pending.get("expires", 0):
-        send_text(phone, "انتهت جلسة التحقق. ابدأ من جديد.")
+
+    if (
+        not pending
+        or time.time() > pending.get("expires", 0)
+    ):
+        send_text(
+            phone,
+            "انتهت جلسة التحقق. ابدأ من جديد.",
+        )
         _reset_state(phone)
         return
+
     if otp.strip() != pending.get("code"):
-        send_text(phone, "الرمز غير صحيح، حاول مرة أخرى:")
+        send_text(
+            phone,
+            "الرمز غير صحيح، حاول مرة أخرى:",
+        )
         return
-    collection = "students" if pending["role"] == "student" else "instructors"
-    await asyncio.to_thread(db.collection(collection).document(pending["user_id"]).update,
-                            {"chat_id": "wa:" + phone, "last_active": time.time()})
+
+    collection = (
+        "students"
+        if pending["role"] == "student"
+        else "instructors"
+    )
+
+    await asyncio.to_thread(
+        db.collection(collection)
+        .document(pending["user_id"])
+        .update,
+        {
+            "chat_id": "wa:" + phone,
+            "last_active": time.time(),
+        },
+    )
+
     _reset_state(phone)
-    send_text(phone, "تم تسجيل الدخول بنجاح ✅")
+
+    send_text(
+        phone,
+        "تم تسجيل الدخول بنجاح ✅",
+    )
+
     wa_show_main_menu(phone)
 
 
 def wa_logout(phone):
     key = "wa:" + phone
-    for collection, finder in (("students", get_student_by_chat_id), ("instructors", get_instructor_by_chat_id)):
+
+    for collection, finder in (
+        (
+            "students",
+            get_student_by_chat_id,
+        ),
+        (
+            "instructors",
+            get_instructor_by_chat_id,
+        ),
+    ):
         user_id, user = finder(key)
+
         if user:
-            db.collection(collection).document(user_id).update({"chat_id": None, "last_active": None})
-            send_text(phone, "تم تسجيل الخروج بنجاح 👋")
+            db.collection(collection).document(
+                user_id
+            ).update(
+                {
+                    "chat_id": None,
+                    "last_active": None,
+                }
+            )
+
+            send_text(
+                phone,
+                "تم تسجيل الخروج بنجاح 👋",
+            )
             return
-    send_text(phone, "أنت غير مسجل دخول.")
+
+    send_text(
+        phone,
+        "أنت غير مسجل دخول.",
+    )
 
 
-# ---------------------------------------------------------------- مواد/شيتات
+# ============================================================
+# Courses / Sheets
+# ============================================================
+
 async def wa_show_courses(phone):
     courses = await _all_courses()
+
     if not courses:
-        send_text(phone, "لا توجد مقررات.")
+        send_text(
+            phone,
+            "لا توجد مقررات.",
+        )
         return
-    lines = ["المقررات المتاحة:"] + [f"- {c.get('name', '')}" for c in courses[:40]]
-    send_text(phone, "\n".join(lines))
+
+    lines = ["المقررات المتاحة:"]
+
+    lines += [
+        f"- {c.get('name', '')}"
+        for c in courses[:40]
+    ]
+
+    send_text(
+        phone,
+        "\n".join(lines),
+    )
 
 
 async def wa_sheets_for(phone, folder):
-    files = await asyncio.to_thread(list_course_files_with_sha, folder) or []
+    files = await asyncio.to_thread(
+        list_course_files_with_sha,
+        folder,
+    ) or []
+
     if not files:
-        send_text(phone, "لا توجد ملفات لهذه المادة.")
+        send_text(
+            phone,
+            "لا توجد ملفات لهذه المادة.",
+        )
         return
+
     state = _get_state(phone)
+
     state["pending_files"] = files
+
     if len(files) == 1:
         state["last_file"] = files[0]
-        await asyncio.to_thread(send_file_from_github, phone, files[0])
+
+        await asyncio.to_thread(
+            send_file_from_github,
+            phone,
+            files[0],
+        )
+
         return
-    items = [(f"file:{i}", f["name"][:24], f["name"][:72]) for i, f in enumerate(files[:100])]
-    send_list(phone, "اختر الملف:", items, header="الملفات")
+
+    items = [
+        (
+            f"file:{i}",
+            f["name"][:24],
+            f["name"][:72],
+        )
+        for i, f in enumerate(files[:100])
+    ]
+
+    send_list(
+        phone,
+        "اختر الملف:",
+        items,
+        header="الملفات",
+    )
 
 
 async def wa_summarize(phone):
     state = _get_state(phone)
+
     file = state.get("last_file")
+
     if not file:
-        send_text(phone, "اطلب ملفاً أولاً ثم اطلب التلخيص.")
+        send_text(
+            phone,
+            "اطلب ملفاً أولاً ثم اطلب التلخيص.",
+        )
         return
+
     try:
-        data = await asyncio.to_thread(download_file_bytes, file["path"])
+        data = await asyncio.to_thread(
+            download_file_bytes,
+            file["path"],
+        )
+
         if not data:
-            send_text(phone, "تعذر تحميل الملف.")
+            send_text(
+                phone,
+                "تعذر تحميل الملف.",
+            )
             return
-        text = await asyncio.to_thread(extract_pdf_text, data)
+
+        text = await asyncio.to_thread(
+            extract_pdf_text,
+            data,
+        )
+
         if not text.strip():
-            send_text(phone, "هذا الملف ليس PDF أو لا يمكن استخراج نص منه للتلخيص.")
+            send_text(
+                phone,
+                "هذا الملف ليس PDF أو لا يمكن استخراج "
+                "نص منه للتلخيص.",
+            )
             return
+
         result = await call_gemini_with_retry(
             client.models.generate_content,
             model=MODEL_NAME,
             contents=(
                 "لخص النص التالي في نقاط واضحة ومرتبة. "
-                "مهم جداً: اكتشف لغة النص الأصلي واكتب الملخص بنفس تلك اللغة تماماً "
-                "(لو النص إنجليزي اكتب الملخص بالإنجليزي، ولو عربي اكتب الملخص بالعربي).\n\n"
+                "مهم جداً: اكتشف لغة النص الأصلي واكتب "
+                "الملخص بنفس تلك اللغة تماماً "
+                "(لو النص إنجليزي اكتب الملخص بالإنجليزي، "
+                "ولو عربي اكتب الملخص بالعربي).\n\n"
                 f"النص:\n{text[:6000]}"
             ),
         )
-        send_text(phone, f"ملخص {file['name']}:\n\n{result.text[:4000]}")
+
+        send_text(
+            phone,
+            f"ملخص {file['name']}:\n\n"
+            f"{result.text[:4000]}",
+        )
+
     except Exception:
-        logging.exception("Summarise failed")
-        send_text(phone, "تعذر تلخيص الملف الآن.")
+        logging.exception(
+            "Summarise failed"
+        )
+
+        send_text(
+            phone,
+            "تعذر تلخيص الملف الآن.",
+        )
 
 
-# ---------------------------------------------------------------- محتوى: إضافة
+# ============================================================
+# Content: Add
+# ============================================================
+
 async def _wa_available_courses(phone):
-    instructor_id, instructor = await asyncio.to_thread(get_instructor_by_chat_id, "wa:" + phone)
+    instructor_id, instructor = await asyncio.to_thread(
+        get_instructor_by_chat_id,
+        "wa:" + phone,
+    )
+
     if instructor_id:
         return instructor.get("courses") or []
+
     if wa_is_admin(phone):
         return await _all_courses()
+
     return []
 
 
 def wa_add_content_start(phone, is_admin):
     state = _get_state(phone)
-    state["data"]["content_is_admin"] = bool(is_admin)
-    send_buttons(phone, "اختر نوع المادة:", [("addmenu:existing", "مادة موجودة"), ("addmenu:new", "مادة جديدة")])
+
+    state["data"]["content_is_admin"] = bool(
+        is_admin
+    )
+
+    send_buttons(
+        phone,
+        "اختر نوع المادة:",
+        [
+            (
+                "addmenu:existing",
+                "مادة موجودة",
+            ),
+            (
+                "addmenu:new",
+                "مادة جديدة",
+            ),
+        ],
+    )
+
     state["state"] = "ADD_MENU"
 
 
 async def wa_add_menu_choice(phone, action):
     state = _get_state(phone)
+
     if action == "addmenu:new":
-        send_text(phone, "اكتب اسم المادة الجديدة:")
+        send_text(
+            phone,
+            "اكتب اسم المادة الجديدة:",
+        )
+
         state["state"] = "ADD_NEW_NAME"
         return
+
     courses = await _wa_available_courses(phone)
+
     if not courses:
-        send_text(phone, "لا توجد مواد متاحة. اختر مادة جديدة.")
+        send_text(
+            phone,
+            "لا توجد مواد متاحة. اختر مادة جديدة.",
+        )
+
         state["state"] = "ADD_NEW_NAME"
         return
-    items = [(f"addcourse:{c.get('folder', '')}", (c.get('name') or 'مادة')[:24], (c.get('folder') or '')[:72])
-             for c in courses[:100]]
+
+    items = [
+        (
+            f"addcourse:{c.get('folder', '')}",
+            (c.get("name") or "مادة")[:24],
+            (c.get("folder") or "")[:72],
+        )
+        for c in courses[:100]
+    ]
+
     state["state"] = "ADD_SELECT_COURSE"
-    send_list(phone, "اختر المادة:", items, header="إضافة محتوى")
+
+    send_list(
+        phone,
+        "اختر المادة:",
+        items,
+        header="إضافة محتوى",
+    )
 
 
 async def wa_add_new_name(phone, name):
     state = _get_state(phone)
+
     folder = slugify_course_name(name)
-    state["data"].update(add_course_folder=folder, add_new_course_name=name, add_is_new_course=True)
-    send_buttons(phone, "هل تريد إرسال ملف الآن؟", [("addnewfile:yes", "إرسال ملف"), ("addnewfile:no", "إنشاء بدون ملف")])
+
+    state["data"].update(
+        add_course_folder=folder,
+        add_new_course_name=name,
+        add_is_new_course=True,
+    )
+
+    send_buttons(
+        phone,
+        "هل تريد إرسال ملف الآن؟",
+        [
+            (
+                "addnewfile:yes",
+                "إرسال ملف",
+            ),
+            (
+                "addnewfile:no",
+                "إنشاء بدون ملف",
+            ),
+        ],
+    )
+
     state["state"] = "ADD_NEW_CONFIRM"
 
 
 async def wa_add_new_confirm(phone, action):
     state = _get_state(phone)
+
     if action == "addnewfile:yes":
-        send_text(phone, "أرسل الملف الآن:")
+        send_text(
+            phone,
+            "أرسل الملف الآن:",
+        )
+
         state["state"] = "ADD_WAIT_FILE"
         return
-    await wa_create_course(phone, state)
-    send_text(phone, "تم إنشاء المادة.")
+
+    await wa_create_course(
+        phone,
+        state,
+    )
+
+    send_text(
+        phone,
+        "تم إنشاء المادة.",
+    )
+
     _reset_state(phone)
 
 
 async def wa_create_course(phone, state):
-    entry = {"name": state["data"]["add_new_course_name"], "folder": state["data"]["add_course_folder"]}
-    instructor_id, instructor = await asyncio.to_thread(get_instructor_by_chat_id, "wa:" + phone)
-    creator = instructor.get("name") if instructor else "أدمن"
-    await asyncio.to_thread(db.collection("courses").document(entry["folder"]).set, {**entry, "created_by": creator})
-    if instructor_id and not state["data"].get("content_is_admin"):
-        await asyncio.to_thread(db.collection("instructors").document(instructor_id).update,
-                                {"courses": firestore.ArrayUnion([entry])})
+    entry = {
+        "name": state["data"]["add_new_course_name"],
+        "folder": state["data"]["add_course_folder"],
+    }
+
+    instructor_id, instructor = await asyncio.to_thread(
+        get_instructor_by_chat_id,
+        "wa:" + phone,
+    )
+
+    creator = (
+        instructor.get("name")
+        if instructor
+        else "أدمن"
+    )
+
+    await asyncio.to_thread(
+        db.collection("courses")
+        .document(entry["folder"])
+        .set,
+        {
+            **entry,
+            "created_by": creator,
+        },
+    )
+
+    if (
+        instructor_id
+        and not state["data"].get("content_is_admin")
+    ):
+        await asyncio.to_thread(
+            db.collection("instructors")
+            .document(instructor_id)
+            .update,
+            {
+                "courses": firestore.ArrayUnion(
+                    [entry]
+                )
+            },
+        )
 
 
 async def wa_add_course_selected(phone, action):
     state = _get_state(phone)
-    state["data"].update(add_course_folder=action.removeprefix("addcourse:"), add_is_new_course=False)
-    send_text(phone, "أرسل الملف الآن:")
+
+    state["data"].update(
+        add_course_folder=action.removeprefix(
+            "addcourse:"
+        ),
+        add_is_new_course=False,
+    )
+
+    send_text(
+        phone,
+        "أرسل الملف الآن:",
+    )
+
     state["state"] = "ADD_WAIT_FILE"
 
 
-async def wa_add_receive_file(phone, filename, media_id):
+async def wa_add_receive_file(
+    phone,
+    filename,
+    media_id,
+):
     state = _get_state(phone)
-    folder = state["data"].get("add_course_folder")
+
+    folder = state["data"].get(
+        "add_course_folder"
+    )
+
     if not folder:
-        send_text(phone, "لم تُحدد مادة. ابدأ من جديد بكتابة 'أضف شيت'.")
+        send_text(
+            phone,
+            "لم تُحدد مادة. ابدأ من جديد بكتابة "
+            "'أضف شيت'.",
+        )
+
         _reset_state(phone)
         return
-    send_text(phone, "جاري رفع الملف…")
+
+    send_text(
+        phone,
+        "جاري رفع الملف…",
+    )
+
     try:
-        data, _ = await asyncio.to_thread(download_media, media_id)
+        data, _ = await asyncio.to_thread(
+            download_media,
+            media_id,
+        )
+
         if not data:
-            send_text(phone, "تعذر تحميل الملف من الواتساب.")
+            send_text(
+                phone,
+                "تعذر تحميل الملف من الواتساب.",
+            )
             return
-        ok = await asyncio.to_thread(github_upload_file, folder, filename, data, f"add {filename}")
-        if ok and state["data"].get("add_is_new_course"):
-            await wa_create_course(phone, state)
-        send_text(phone, "تم رفع الملف بنجاح ✅" if ok else "تعذر رفع الملف.")
+
+        ok = await asyncio.to_thread(
+            github_upload_file,
+            folder,
+            filename,
+            data,
+            f"add {filename}",
+        )
+
+        if (
+            ok
+            and state["data"].get(
+                "add_is_new_course"
+            )
+        ):
+            await wa_create_course(
+                phone,
+                state,
+            )
+
+        send_text(
+            phone,
+            "تم رفع الملف بنجاح ✅"
+            if ok
+            else "تعذر رفع الملف.",
+        )
+
     except Exception:
-        logging.exception("Add content failed")
-        send_text(phone, "تعذر رفع الملف.")
+        logging.exception(
+            "Add content failed"
+        )
+
+        send_text(
+            phone,
+            "تعذر رفع الملف.",
+        )
+
     finally:
         _reset_state(phone)
 
 
-# ---------------------------------------------------------------- محتوى: حذف
+# ============================================================
+# Content: Delete
+# ============================================================
+
 async def wa_delete_start(phone):
     state = _get_state(phone)
-    send_buttons(phone, "ماذا تريد أن تحذف؟", [("delmenu:single", "حذف شيت/ملف"), ("delmenu:whole", "حذف مادة كاملة")])
+
+    send_buttons(
+        phone,
+        "ماذا تريد أن تحذف؟",
+        [
+            (
+                "delmenu:single",
+                "حذف شيت/ملف",
+            ),
+            (
+                "delmenu:whole",
+                "حذف مادة كاملة",
+            ),
+        ],
+    )
+
     state["state"] = "DEL_MENU"
 
 
 async def wa_del_menu(phone, action):
     state = _get_state(phone)
+
     courses = await _wa_available_courses(phone)
+
     if not courses:
-        send_text(phone, "لا توجد مواد.")
+        send_text(
+            phone,
+            "لا توجد مواد.",
+        )
+
         _reset_state(phone)
         return
-    prefix = "delwhole" if action == "delmenu:whole" else "delcourse"
-    items = [(f"{prefix}:{c.get('folder', '')}", (c.get('name') or 'مادة')[:24], (c.get('folder') or '')[:72])
-             for c in courses[:100]]
+
+    prefix = (
+        "delwhole"
+        if action == "delmenu:whole"
+        else "delcourse"
+    )
+
+    items = [
+        (
+            f"{prefix}:{c.get('folder', '')}",
+            (c.get("name") or "مادة")[:24],
+            (c.get("folder") or "")[:72],
+        )
+        for c in courses[:100]
+    ]
+
     state["state"] = "DEL_SELECT_COURSE"
-    send_list(phone, "اختر المادة:", items, header="الحذف")
+
+    send_list(
+        phone,
+        "اختر المادة:",
+        items,
+        header="الحذف",
+    )
 
 
 async def wa_del_select_course(phone, action):
     state = _get_state(phone)
-    prefix, folder = action.split(":", 1)
+
+    prefix, folder = action.split(
+        ":",
+        1,
+    )
+
     if prefix == "delwhole":
-        send_buttons(phone, "سيتم حذف المادة وكل شيتاتها نهائياً. متأكد؟",
-                     [("delwholeconfirm:yes", "تأكيد الحذف"), ("delwholeconfirm:no", "إلغاء")])
-        state["data"]["delete_whole_folder"] = folder
-        state["state"] = "DEL_WHOLE_CONFIRM"
+        send_buttons(
+            phone,
+            "سيتم حذف المادة وكل شيتاتها نهائياً. متأكد؟",
+            [
+                (
+                    "delwholeconfirm:yes",
+                    "تأكيد الحذف",
+                ),
+                (
+                    "delwholeconfirm:no",
+                    "إلغاء",
+                ),
+            ],
+        )
+
+        state["data"][
+            "delete_whole_folder"
+        ] = folder
+
+        state["state"] = (
+            "DEL_WHOLE_CONFIRM"
+        )
+
         return
-    files = await asyncio.to_thread(list_course_files_with_sha, folder) or []
+
+    files = await asyncio.to_thread(
+        list_course_files_with_sha,
+        folder,
+    ) or []
+
     if not files:
-        send_text(phone, "لا توجد ملفات لهذه المادة.")
+        send_text(
+            phone,
+            "لا توجد ملفات لهذه المادة.",
+        )
+
         _reset_state(phone)
         return
+
     state["pending_files"] = files
-    items = [(f"delfile:{i}", f["name"][:24], f["name"][:72]) for i, f in enumerate(files[:100])]
+
+    items = [
+        (
+            f"delfile:{i}",
+            f["name"][:24],
+            f["name"][:72],
+        )
+        for i, f in enumerate(files[:100])
+    ]
+
     state["state"] = "DEL_SELECT_FILE"
-    send_list(phone, "اختر الملف للحذف:", items, header="الملفات")
+
+    send_list(
+        phone,
+        "اختر الملف للحذف:",
+        items,
+        header="الملفات",
+    )
 
 
 async def wa_del_select_file(phone, action):
     state = _get_state(phone)
+
     try:
-        index = int(action.split(":", 1)[1])
+        index = int(
+            action.split(":", 1)[1]
+        )
+
         file = state["pending_files"][index]
+
     except (ValueError, IndexError):
-        send_text(phone, "قائمة منتهية الصلاحية. ابدأ من جديد.")
+        send_text(
+            phone,
+            "قائمة منتهية الصلاحية. ابدأ من جديد.",
+        )
+
         _reset_state(phone)
         return
-    send_buttons(phone, f"حذف {file['name']}؟", [("delfileconfirm:yes", "نعم احذف"), ("delfileconfirm:no", "إلغاء")])
+
+    send_buttons(
+        phone,
+        f"حذف {file['name']}؟",
+        [
+            (
+                "delfileconfirm:yes",
+                "نعم احذف",
+            ),
+            (
+                "delfileconfirm:no",
+                "إلغاء",
+            ),
+        ],
+    )
+
     state["data"]["del_file_index"] = index
+
     state["state"] = "DEL_FILE_CONFIRM"
 
 
 async def wa_del_file_confirm(phone, action):
     state = _get_state(phone)
+
     if action == "delfileconfirm:no":
-        send_text(phone, "تم الإلغاء.")
+        send_text(
+            phone,
+            "تم الإلغاء.",
+        )
+
         _reset_state(phone)
         return
+
     try:
-        file = state["pending_files"][state["data"]["del_file_index"]]
-        ok = await asyncio.to_thread(github_delete_file, file["path"], file["sha"], f"delete {file['name']}")
-        send_text(phone, "تم الحذف ✅" if ok else "تعذر الحذف.")
+        file = state["pending_files"][
+            state["data"]["del_file_index"]
+        ]
+
+        ok = await asyncio.to_thread(
+            github_delete_file,
+            file["path"],
+            file["sha"],
+            f"delete {file['name']}",
+        )
+
+        send_text(
+            phone,
+            "تم الحذف ✅"
+            if ok
+            else "تعذر الحذف.",
+        )
+
     except Exception:
-        logging.exception("Delete file failed")
-        send_text(phone, "تعذر الحذف.")
+        logging.exception(
+            "Delete file failed"
+        )
+
+        send_text(
+            phone,
+            "تعذر الحذف.",
+        )
+
     finally:
         _reset_state(phone)
 
 
 async def wa_del_whole_confirm(phone, action):
     state = _get_state(phone)
+
     if action == "delwholeconfirm:no":
-        send_text(phone, "تم الإلغاء.")
+        send_text(
+            phone,
+            "تم الإلغاء.",
+        )
+
         _reset_state(phone)
         return
-    folder = state["data"].get("delete_whole_folder")
+
+    folder = state["data"].get(
+        "delete_whole_folder"
+    )
+
     if not folder:
         _reset_state(phone)
         return
-    files = await asyncio.to_thread(list_course_files_with_sha, folder) or []
-    ok = all(await asyncio.to_thread(github_delete_file, f["path"], f["sha"], f"delete {f['name']}") for f in files)
+
+    files = await asyncio.to_thread(
+        list_course_files_with_sha,
+        folder,
+    ) or []
+
+    ok = all(
+        await asyncio.to_thread(
+            github_delete_file,
+            f["path"],
+            f["sha"],
+            f"delete {f['name']}",
+        )
+        for f in files
+    )
+
     if ok:
-        await asyncio.to_thread(db.collection("courses").document(folder).delete)
-        send_text(phone, "تم حذف المادة وكل الشيتات ✅")
+        await asyncio.to_thread(
+            db.collection("courses")
+            .document(folder)
+            .delete
+        )
+
+        send_text(
+            phone,
+            "تم حذف المادة وكل الشيتات ✅",
+        )
+
     else:
-        send_text(phone, "تعذر حذف بعض الملفات؛ لم تُحذف المادة من قاعدة البيانات.")
+        send_text(
+            phone,
+            "تعذر حذف بعض الملفات؛ "
+            "لم تُحذف المادة من قاعدة البيانات.",
+        )
+
     _reset_state(phone)
 
 
+# ============================================================
+# Upload processing
+# ============================================================
+
 async def wa_process_upload(phone, action):
     state = _get_state(phone)
+
     up = state.get("upload_file")
+
     if not up:
         saved = get_pending_upload(phone)
+
         if saved:
             up = saved
+
         else:
-            send_text(phone, "لم أجد الملف. أرسله مرة أخرى.")
+            send_text(
+                phone,
+                "لم أجد الملف. أرسله مرة أخرى.",
+            )
+
             _reset_state(phone)
             return
-    send_text(phone, "جاري المعالجة…")
+
+    send_text(
+        phone,
+        "جاري المعالجة…",
+    )
+
     try:
         file_data = up.get("data")
-        mime = up.get("mime") or _guess_mime(up.get("name") or "")
+
+        mime = (
+            up.get("mime")
+            or _guess_mime(
+                up.get("name") or ""
+            )
+        )
+
         if not file_data:
-            send_text(phone, "تعذر تحميل الملف. أرسلو مرة أخرى.")
+            send_text(
+                phone,
+                "تعذر تحميل الملف. أرسلو مرة أخرى.",
+            )
             return
-        base_action = action.removesuffix("_pdf")
+
+        base_action = action.removesuffix(
+            "_pdf"
+        )
+
         if base_action == "translate":
-            prompt = "اكتشف لغة محتوى هذا الملف ثم ترجمه إلى اللغة المقابلة: إن كان بالعربية ترجمه إلى الإنجليزية، وإن كان بالإنجليزية ترجمه إلى العربية، مع الحفاظ على المعنى والمصطلحات."
+            prompt = (
+                "اكتشف لغة محتوى هذا الملف ثم ترجمه "
+                "إلى اللغة المقابلة: إن كان بالعربية "
+                "ترجمه إلى الإنجليزية، وإن كان "
+                "بالإنجليزية ترجمه إلى العربية، "
+                "مع الحفاظ على المعنى والمصطلحات."
+            )
+
         else:
-            prompt = "لخص محتوى هذا الملف في نقاط واضحة ومرتبة. اكتب الملخص بنفس لغة الملف الأصلية."
-        part = types.Part.from_bytes(data=file_data, mime_type=mime)
-        response = await call_gemini_with_retry(client.models.generate_content, model=MODEL_NAME,
-                                                contents=[prompt, part])
-        result_text = (response.text or "").strip()[:4000]
+            prompt = (
+                "لخص محتوى هذا الملف في نقاط واضحة "
+                "ومرتبة. اكتب الملخص بنفس لغة الملف الأصلية."
+            )
+
+        part = types.Part.from_bytes(
+            data=file_data,
+            mime_type=mime,
+        )
+
+        response = await call_gemini_with_retry(
+            client.models.generate_content,
+            model=MODEL_NAME,
+            contents=[
+                prompt,
+                part,
+            ],
+        )
+
+        result_text = (
+            response.text or ""
+        ).strip()[:4000]
+
         if action.endswith("_pdf"):
             try:
-                from pdf_utils import text_to_pdf_bytes
-                title = "ترجمة الملف" if base_action == "translate" else "ملخص الملف"
-                pdf_buf = await asyncio.to_thread(text_to_pdf_bytes, result_text, title)
-                pdf_bytes = pdf_buf.read() if hasattr(pdf_buf, "read") else pdf_buf
-                media_id = await asyncio.to_thread(upload_media, pdf_bytes, "application/pdf", f"{title}.pdf")
+                from pdf_utils import (
+                    text_to_pdf_bytes
+                )
+
+                title = (
+                    "ترجمة الملف"
+                    if base_action == "translate"
+                    else "ملخص الملف"
+                )
+
+                pdf_buf = await asyncio.to_thread(
+                    text_to_pdf_bytes,
+                    result_text,
+                    title,
+                )
+
+                pdf_bytes = (
+                    pdf_buf.read()
+                    if hasattr(pdf_buf, "read")
+                    else pdf_buf
+                )
+
+                media_id = await asyncio.to_thread(
+                    upload_media,
+                    pdf_bytes,
+                    "application/pdf",
+                    f"{title}.pdf",
+                )
+
                 if media_id:
-                    send_document(phone, media_id, f"{title}.pdf")
+                    send_document(
+                        phone,
+                        media_id,
+                        f"{title}.pdf",
+                    )
                 else:
-                    send_text(phone, result_text)
+                    send_text(
+                        phone,
+                        result_text,
+                    )
+
             except Exception:
-                logging.exception("PDF generation failed")
-                send_text(phone, result_text)
+                logging.exception(
+                    "PDF generation failed"
+                )
+
+                send_text(
+                    phone,
+                    result_text,
+                )
+
         else:
-            send_text(phone, result_text)
+            send_text(
+                phone,
+                result_text,
+            )
+
     except Exception:
-        logging.exception("Upload processing failed")
-        send_text(phone, "تعذرت معالجة الملف.")
+        logging.exception(
+            "Upload processing failed"
+        )
+
+        send_text(
+            phone,
+            "تعذرت معالجة الملف.",
+        )
+
     finally:
         clear_pending_upload(phone)
         _reset_state(phone)
 
 
-# ---------------------------------------------------------------- توجيه
+# ============================================================
+# Routing
+# ============================================================
+
 async def handle_callback(phone, payload):
     state = _get_state(phone)
+
     if payload == "login":
         start_login(phone)
         return
+
     if payload == "guest":
-        send_text(phone, (
-            "أهلاً بك كزائر 👋 يمكنك الآن:\n"
-            "• طرح أي سؤال عن الجامعة.\n"
-            "• إرسال ملف وسألخصه أو أترجمه.\n"
-            "• إرسال رسالة صوتية وسأحوّلها لنص.\n\n"
-            "للدخول إلى المقررات والشيتات سجّل الدخول."
-        ))
+        send_text(
+            phone,
+            (
+                "أهلاً بك كزائر 👋 يمكنك الآن:\n"
+                "• طرح أي سؤال عن الجامعة.\n"
+                "• إرسال ملف وسألخصه أو أترجمه.\n"
+                "• إرسال رسالة صوتية وسأحوّلها لنص.\n\n"
+                "للدخول إلى المقررات والشيتات سجّل الدخول."
+            ),
+        )
         return
+
     if payload.startswith("menu:"):
-        await wa_menu_action(phone, payload.removeprefix("menu:"))
+        await wa_menu_action(
+            phone,
+            payload.removeprefix("menu:"),
+        )
         return
+
     if payload.startswith("sheet:"):
-        await wa_sheets_for(phone, payload.removeprefix("sheet:"))
+        await wa_sheets_for(
+            phone,
+            payload.removeprefix("sheet:"),
+        )
         return
+
     if payload.startswith("file:"):
         try:
-            index = int(payload.split(":", 1)[1])
+            index = int(
+                payload.split(":", 1)[1]
+            )
+
             file = state["pending_files"][index]
+
             state["last_file"] = file
-            await asyncio.to_thread(send_file_from_github, phone, file)
+
+            await asyncio.to_thread(
+                send_file_from_github,
+                phone,
+                file,
+            )
+
         except (ValueError, IndexError):
-            send_text(phone, "انتهت صلاحية القائمة. اطلب الملفات مرة أخرى.")
+            send_text(
+                phone,
+                "انتهت صلاحية القائمة. "
+                "اطلب الملفات مرة أخرى.",
+            )
+
         return
+
     if payload.startswith("uploadact:"):
-        await wa_process_upload(phone, payload.removeprefix("uploadact:"))
+        await wa_process_upload(
+            phone,
+            payload.removeprefix("uploadact:"),
+        )
         return
+
     if payload.startswith("addmenu:"):
-        await wa_add_menu_choice(phone, payload)
+        await wa_add_menu_choice(
+            phone,
+            payload,
+        )
         return
+
     if payload.startswith("addcourse:"):
-        await wa_add_course_selected(phone, payload)
+        await wa_add_course_selected(
+            phone,
+            payload,
+        )
         return
+
     if payload.startswith("addnewfile:"):
-        await wa_add_new_confirm(phone, payload)
+        await wa_add_new_confirm(
+            phone,
+            payload,
+        )
         return
+
     if payload.startswith("delmenu:"):
-        await wa_del_menu(phone, payload)
+        await wa_del_menu(
+            phone,
+            payload,
+        )
         return
-    if payload.startswith("delwhole:") or payload.startswith("delcourse:"):
-        await wa_del_select_course(phone, payload)
+
+    if (
+        payload.startswith("delwhole:")
+        or payload.startswith("delcourse:")
+    ):
+        await wa_del_select_course(
+            phone,
+            payload,
+        )
         return
+
     if payload.startswith("delwholeconfirm:"):
-        await wa_del_whole_confirm(phone, payload)
+        await wa_del_whole_confirm(
+            phone,
+            payload,
+        )
         return
+
     if payload.startswith("delfile:"):
-        await wa_del_select_file(phone, payload)
+        await wa_del_select_file(
+            phone,
+            payload,
+        )
         return
+
     if payload.startswith("delfileconfirm:"):
-        await wa_del_file_confirm(phone, payload)
+        await wa_del_file_confirm(
+            phone,
+            payload,
+        )
         return
 
 
 async def route_text(phone, text):
     lang_cmd = parse_language_toggle(text)
+
     if lang_cmd:
         if lang_cmd == "show":
-            send_text(phone, "اختر اللغة بكتابة English أو عربي\nChoose a language: type 'English' or 'عربي'")
+            send_text(
+                phone,
+                "اختر اللغة بكتابة English أو عربي\n"
+                "Choose a language: type 'English' or 'عربي'",
+            )
+
         elif lang_cmd == "en":
-            set_chat_language("wa:" + phone, "en")
-            send_text(phone, "Done! I will now reply in English. Type 'عربي' anytime to switch back.")
+            set_chat_language(
+                "wa:" + phone,
+                "en",
+            )
+
+            send_text(
+                phone,
+                "Done! I will now reply in English. "
+                "Type 'عربي' anytime to switch back.",
+            )
+
         else:
-            set_chat_language("wa:" + phone, "ar")
-            send_text(phone, "تم! الآن سأرد عليك بالعربية. اكتب English في أي وقت للتبديل.")
+            set_chat_language(
+                "wa:" + phone,
+                "ar",
+            )
+
+            send_text(
+                phone,
+                "تم! الآن سأرد عليك بالعربية. "
+                "اكتب English في أي وقت للتبديل.",
+            )
+
         return
 
-    _, student = await asyncio.to_thread(get_student_by_chat_id, "wa:" + phone)
-    instructor_id, instructor = await asyncio.to_thread(get_instructor_by_chat_id, "wa:" + phone)
+    _, student = await asyncio.to_thread(
+        get_student_by_chat_id,
+        "wa:" + phone,
+    )
+
+    instructor_id, instructor = await asyncio.to_thread(
+        get_instructor_by_chat_id,
+        "wa:" + phone,
+    )
+
     is_admin = wa_is_admin(phone)
 
-    if text.strip().lower() in ("قائمة", "menu", "مساعدة", "help", "الخدمات"):
+    if text.strip().lower() in (
+        "قائمة",
+        "menu",
+        "مساعدة",
+        "help",
+        "الخدمات",
+    ):
         wa_show_main_menu(phone)
         return
 
-    if is_admin and await _handle_admin_command(_make_update(phone), None, text):
+    if (
+        is_admin
+        and await _handle_admin_command(
+            _make_update(phone),
+            None,
+            text,
+        )
+    ):
         return
 
-    intent = await detect_user_intent(text, is_instructor=bool(instructor))
-    is_material_user = bool(student or instructor_id or is_admin)
+    intent = await detect_user_intent(
+        text,
+        is_instructor=bool(instructor),
+    )
+
+    is_material_user = bool(
+        student
+        or instructor_id
+        or is_admin
+    )
 
     if intent == "LOGIN":
         if student or instructor_id:
-            send_text(phone, "أنت مسجل دخول بالفعل.")
+            send_text(
+                phone,
+                "أنت مسجل دخول بالفعل.",
+            )
         else:
             start_login(phone)
+
         return
+
     if intent == "LOGOUT":
         wa_logout(phone)
         return
-    if intent in ("GET_COURSES", "DR_GET_COURSES"):
+
+    if intent in (
+        "GET_COURSES",
+        "DR_GET_COURSES",
+    ):
         if not is_material_user:
-            send_text(phone, "هذه الخدمة للطلاب المسجلين أو الأدمن فقط.")
+            send_text(
+                phone,
+                "هذه الخدمة للطلاب المسجلين أو الأدمن فقط.",
+            )
             return
+
         await wa_show_courses(phone)
         return
-    if intent in ("GET_SHEETS", "DR_GET_SHEETS"):
+
+    if intent in (
+        "GET_SHEETS",
+        "DR_GET_SHEETS",
+    ):
         if not is_material_user:
-            send_text(phone, "هذه الخدمة للطلاب المسجلين أو الأدمن فقط.")
+            send_text(
+                phone,
+                "هذه الخدمة للطلاب المسجلين أو الأدمن فقط.",
+            )
             return
+
         courses = await _all_courses()
-        items = [(f"sheet:{c.get('folder', '')}", (c.get('name') or 'مادة')[:24], (c.get('folder') or '')[:72])
-                 for c in courses[:100]]
+
+        items = [
+            (
+                f"sheet:{c.get('folder', '')}",
+                (c.get("name") or "مادة")[:24],
+                (c.get("folder") or "")[:72],
+            )
+            for c in courses[:100]
+        ]
+
         if not items:
-            send_text(phone, "لا توجد مقررات.")
+            send_text(
+                phone,
+                "لا توجد مقررات.",
+            )
             return
-        send_list(phone, "اختر المادة لعرض شيتاتها:", items, header="الشيتات")
+
+        send_list(
+            phone,
+            "اختر المادة لعرض شيتاتها:",
+            items,
+            header="الشيتات",
+        )
+
         return
+
     if intent == "SUMMARIZE":
         if not is_material_user:
-            send_text(phone, "هذه الخدمة للطلاب المسجلين أو الأدمن فقط.")
+            send_text(
+                phone,
+                "هذه الخدمة للطلاب المسجلين أو الأدمن فقط.",
+            )
             return
+
         await wa_summarize(phone)
         return
+
     if intent == "DR_ADD_CONTENT":
-        if not (instructor_id or is_admin):
-            send_text(phone, "هذه الخدمة لأعضاء هيئة التدريس أو الأدمن فقط.")
+        if not (
+            instructor_id
+            or is_admin
+        ):
+            send_text(
+                phone,
+                "هذه الخدمة لأعضاء هيئة التدريس أو الأدمن فقط.",
+            )
             return
-        wa_add_content_start(phone, bool(is_admin and not instructor_id))
+
+        wa_add_content_start(
+            phone,
+            bool(
+                is_admin
+                and not instructor_id
+            ),
+        )
+
         return
+
     if intent == "DR_DELETE_CONTENT":
-        if not (instructor_id or is_admin):
-            send_text(phone, "هذه الخدمة لأعضاء هيئة التدريس أو الأدمن فقط.")
+        if not (
+            instructor_id
+            or is_admin
+        ):
+            send_text(
+                phone,
+                "هذه الخدمة لأعضاء هيئة التدريس أو الأدمن فقط.",
+            )
             return
+
         await wa_delete_start(phone)
         return
 
-    language = get_effective_language("wa:" + phone, text)
-    answer = await generate_answer(text, "wa:" + phone, instructor_data=instructor, language=language)
-    send_text(phone, answer)
+    language = get_effective_language(
+        "wa:" + phone,
+        text,
+    )
 
+    answer = await generate_answer(
+        text,
+        "wa:" + phone,
+        instructor_data=instructor,
+        language=language,
+    )
+
+    send_text(
+        phone,
+        answer,
+    )
+
+
+# ============================================================
+# Voice
+# ============================================================
 
 async def handle_voice(phone, media_id):
-    send_text(phone, "جاري معالجة الرسالة الصوتية…")
-    try:
-        data, mime = await asyncio.to_thread(download_media, media_id)
-        if not data:
-            send_text(phone, "تعذر تحميل الرسالة الصوتية.")
-            return
-        part = types.Part.from_bytes(data=data, mime_type=mime or "audio/ogg")
-        response = await call_gemini_with_retry(client.models.generate_content, model=MODEL_NAME,
-                                                contents=["استخرج النص المنطوق فقط.", part])
-        text = (response.text or "").strip()
-        if text:
-            await route_text(phone, text)
-    except Exception:
-        logging.exception("Voice processing failed")
-        send_text(phone, "تعذرت معالجة الرسالة الصوتية.")
+    send_text(
+        phone,
+        "جاري معالجة الرسالة الصوتية…",
+    )
 
+    try:
+        data, mime = await asyncio.to_thread(
+            download_media,
+            media_id,
+        )
+
+        if not data:
+            send_text(
+                phone,
+                "تعذر تحميل الرسالة الصوتية.",
+            )
+            return
+
+        part = types.Part.from_bytes(
+            data=data,
+            mime_type=mime or "audio/ogg",
+        )
+
+        response = await call_gemini_with_retry(
+            client.models.generate_content,
+            model=MODEL_NAME,
+            contents=[
+                "استخرج النص المنطوق فقط.",
+                part,
+            ],
+        )
+
+        text = (
+            response.text or ""
+        ).strip()
+
+        if text:
+            await route_text(
+                phone,
+                text,
+            )
+
+    except Exception:
+        logging.exception(
+            "Voice processing failed"
+        )
+
+        send_text(
+            phone,
+            "تعذرت معالجة الرسالة الصوتية.",
+        )
+
+
+# ============================================================
+# Process WhatsApp message
+# ============================================================
 
 async def process_wa_message(phone, msg):
     state = _get_state(phone)
-    if not state.get("welcome_sent") and not was_welcome_sent(phone):
+
+    if (
+        not state.get("welcome_sent")
+        and not was_welcome_sent(phone)
+    ):
         state["welcome_sent"] = True
+
         mark_welcome_sent(phone)
+
         wa_help(phone)
-        send_buttons(phone, "كيف تريد المتابعة؟",
-                     [("login", "تسجيل الدخول"), ("guest", "المتابعة كزائر")])
+
+        send_buttons(
+            phone,
+            "كيف تريد المتابعة؟",
+            [
+                (
+                    "login",
+                    "تسجيل الدخول",
+                ),
+                (
+                    "guest",
+                    "المتابعة كزائر",
+                ),
+            ],
+        )
 
     msg_type = msg.get("type")
+
+    # --------------------------------------------------------
+    # Interactive
+    # --------------------------------------------------------
+
     if msg_type == "interactive":
-        interactive = msg.get("interactive") or {}
+        interactive = (
+            msg.get("interactive")
+            or {}
+        )
+
         payload = None
+
         if interactive.get("type") == "button_reply":
-            payload = (interactive.get("button_reply") or {}).get("id")
+            payload = (
+                interactive.get("button_reply")
+                or {}
+            ).get("id")
+
         elif interactive.get("type") == "list_reply":
-            payload = (interactive.get("list_reply") or {}).get("id")
+            payload = (
+                interactive.get("list_reply")
+                or {}
+            ).get("id")
+
         if payload:
-            await handle_callback(phone, payload)
+            await handle_callback(
+                phone,
+                payload,
+            )
+
         return
+
+    # --------------------------------------------------------
+    # Audio
+    # --------------------------------------------------------
 
     if msg_type == "audio":
-        media_id = (msg.get("audio") or {}).get("id")
+        media_id = (
+            msg.get("audio")
+            or {}
+        ).get("id")
+
         if media_id:
-            await handle_voice(phone, media_id)
+            await handle_voice(
+                phone,
+                media_id,
+            )
+
         return
 
-    if msg_type in ("document", "image"):
-        meta = msg.get(msg_type) or {}
+    # --------------------------------------------------------
+    # Documents / Images
+    # --------------------------------------------------------
+
+    if msg_type in (
+        "document",
+        "image",
+    ):
+        meta = (
+            msg.get(msg_type)
+            or {}
+        )
+
         media_id = meta.get("id")
-        if state.get("state") == "ADD_WAIT_FILE":
-            await wa_add_receive_file(phone, meta.get("filename") or "file", media_id)
+
+        if (
+            state.get("state")
+            == "ADD_WAIT_FILE"
+        ):
+            await wa_add_receive_file(
+                phone,
+                meta.get("filename") or "file",
+                media_id,
+            )
             return
+
         if not media_id:
-            send_text(phone, "تعذر استلام الملف.")
+            send_text(
+                phone,
+                "تعذر استلام الملف.",
+            )
             return
-        file_data, file_mime = await asyncio.to_thread(download_media, media_id)
+
+        file_data, file_mime = await asyncio.to_thread(
+            download_media,
+            media_id,
+        )
+
         if not file_data:
-            send_text(phone, "تعذر تحميل الملف. أرسلو مرة أخرى.")
+            send_text(
+                phone,
+                "تعذر تحميل الملف. أرسلو مرة أخرى.",
+            )
             return
+
         state["upload_file"] = {
             "data": file_data,
-            "mime": file_mime or _guess_mime(meta.get("filename") or ""),
-            "name": meta.get("filename") or meta.get("caption") or "ملف",
+            "mime": (
+                file_mime
+                or _guess_mime(
+                    meta.get("filename") or ""
+                )
+            ),
+            "name": (
+                meta.get("filename")
+                or meta.get("caption")
+                or "ملف"
+            ),
         }
+
         state["state"] = "UPLOAD_ASK_ACTION"
+
         save_pending_upload(
             phone,
             file_data,
-            meta.get("filename") or meta.get("caption") or "ملف",
-            file_mime or _guess_mime(meta.get("filename") or ""),
+            (
+                meta.get("filename")
+                or meta.get("caption")
+                or "ملف"
+            ),
+            (
+                file_mime
+                or _guess_mime(
+                    meta.get("filename") or ""
+                )
+            ),
         )
-        send_list(phone, "استلمت الملف ✅ ماذا تريد أن أفعل به؟",
-                  [("uploadact:summarize", "تلخيص كنص", "ملخص نصي بالعربي"),
-                   ("uploadact:summarize_pdf", "تلخيص كـ PDF", "تحميل ملف PDF"),
-                   ("uploadact:translate", "ترجمة كنص", "ترجمة تلقائية"),
-                   ("uploadact:translate_pdf", "ترجمة كـ PDF", "تحميل ملف PDF")])
+
+        send_list(
+            phone,
+            "استلمت الملف ✅ ماذا تريد أن أفعل به؟",
+            [
+                (
+                    "uploadact:summarize",
+                    "تلخيص كنص",
+                    "ملخص نصي بالعربي",
+                ),
+                (
+                    "uploadact:summarize_pdf",
+                    "تلخيص كـ PDF",
+                    "تحميل ملف PDF",
+                ),
+                (
+                    "uploadact:translate",
+                    "ترجمة كنص",
+                    "ترجمة تلقائية",
+                ),
+                (
+                    "uploadact:translate_pdf",
+                    "ترجمة كـ PDF",
+                    "تحميل ملف PDF",
+                ),
+            ],
+        )
+
         return
+
+    # --------------------------------------------------------
+    # Text
+    # --------------------------------------------------------
 
     if msg_type != "text":
         return
 
-    text = (msg.get("text") or {}).get("body") or ""
+    text = (
+        msg.get("text")
+        or {}
+    ).get("body") or ""
+
     current = state.get("state")
+
     if current == "LOGIN_ASK_ID":
-        await handle_login_id(phone, text)
+        await handle_login_id(
+            phone,
+            text,
+        )
         return
+
     if current == "LOGIN_ASK_OTP":
-        await handle_login_otp(phone, text)
+        await handle_login_otp(
+            phone,
+            text,
+        )
         return
+
     if current == "ADD_NEW_NAME":
-        await wa_add_new_name(phone, text)
+        await wa_add_new_name(
+            phone,
+            text,
+        )
         return
+
     if current == "UPLOAD_ASK_ACTION":
         t = text.lower()
-        if any(w in t for w in ("تلخيص pdf", "تلخيص بي دي اف", "ملخص pdf", "summarize pdf", "summary pdf", "summarize as pdf")):
-            await wa_process_upload(phone, "summarize_pdf")
-        elif any(w in t for w in ("ترجمة pdf", "ترجمة بي دي اف", "ترجمة ملف", "translate pdf", "translate as pdf")):
-            await wa_process_upload(phone, "translate_pdf")
-        elif any(w in t for w in ("لخص", "لخّص", "تلخيص كنص", "summarize", "summarise", "summary")):
-            await wa_process_upload(phone, "summarize")
-        elif any(w in t for w in ("ترجمة كنص", "ترجم كنص", "translate")):
-            await wa_process_upload(phone, "translate")
+
+        if any(
+            w in t
+            for w in (
+                "تلخيص pdf",
+                "تلخيص بي دي اف",
+                "ملخص pdf",
+                "summarize pdf",
+                "summary pdf",
+                "summarize as pdf",
+            )
+        ):
+            await wa_process_upload(
+                phone,
+                "summarize_pdf",
+            )
+
+        elif any(
+            w in t
+            for w in (
+                "ترجمة pdf",
+                "ترجمة بي دي اف",
+                "ترجمة ملف",
+                "translate pdf",
+                "translate as pdf",
+            )
+        ):
+            await wa_process_upload(
+                phone,
+                "translate_pdf",
+            )
+
+        elif any(
+            w in t
+            for w in (
+                "لخص",
+                "لخّص",
+                "تلخيص كنص",
+                "summarize",
+                "summarise",
+                "summary",
+            )
+        ):
+            await wa_process_upload(
+                phone,
+                "summarize",
+            )
+
+        elif any(
+            w in t
+            for w in (
+                "ترجمة كنص",
+                "ترجم كنص",
+                "translate",
+            )
+        ):
+            await wa_process_upload(
+                phone,
+                "translate",
+            )
+
         else:
-            send_text(phone, "استخدم الأزرار أو اكتب: لخص / ترجم")
+            send_text(
+                phone,
+                "استخدم الأزرار أو اكتب: لخص / ترجم",
+            )
+
         return
-    if current in ("ADD_MENU", "ADD_SELECT_COURSE", "ADD_NEW_CONFIRM", "ADD_WAIT_FILE",
-                   "DEL_MENU", "DEL_SELECT_COURSE", "DEL_SELECT_FILE", "DEL_FILE_CONFIRM",
-                   "DEL_WHOLE_CONFIRM"):
-        send_text(phone, "استخدم الأزرار أعلاه للمتابعة.")
+
+    if current in (
+        "ADD_MENU",
+        "ADD_SELECT_COURSE",
+        "ADD_NEW_CONFIRM",
+        "ADD_WAIT_FILE",
+        "DEL_MENU",
+        "DEL_SELECT_COURSE",
+        "DEL_SELECT_FILE",
+        "DEL_FILE_CONFIRM",
+        "DEL_WHOLE_CONFIRM",
+    ):
+        send_text(
+            phone,
+            "استخدم الأزرار أعلاه للمتابعة.",
+        )
         return
 
-    await route_text(phone, text)
+    await route_text(
+        phone,
+        text,
+    )
 
 
-# ---------------------------------------------------------------- Webhook
+# ============================================================
+# Webhook
+# ============================================================
+
 def _handle_webhook_payload(payload):
     global _inbound_phone_id
+
     try:
         for entry in payload.get("entry", []):
             for change in entry.get("changes", []):
-                value = change.get("value") or {}
-                metadata = value.get("metadata") or {}
+                value = (
+                    change.get("value")
+                    or {}
+                )
+
+                metadata = (
+                    value.get("metadata")
+                    or {}
+                )
+
                 if metadata.get("phone_number_id"):
-                    _inbound_phone_id = metadata["phone_number_id"]
-                for msg in value.get("messages", []):
+                    _inbound_phone_id = (
+                        metadata["phone_number_id"]
+                    )
+
+                for msg in value.get(
+                    "messages",
+                    [],
+                ):
                     phone = msg.get("from")
+
                     if not phone:
                         continue
-                    asyncio.run(process_wa_message(phone, msg))
+
+                    asyncio.run(
+                        process_wa_message(
+                            phone,
+                            msg,
+                        )
+                    )
+
     except Exception:
-        logging.exception("Webhook processing failed")
+        logging.exception(
+            "Webhook processing failed"
+        )
 
 
 class WAHandler(BaseHTTPRequestHandler):
+
     def log_message(self, *args):
+        # منع رسائل HTTP المزعجة في Render logs
         pass
 
     def _send(self, code, body):
-        data = body.encode() if isinstance(body, str) else body
+        data = (
+            body.encode()
+            if isinstance(body, str)
+            else body
+        )
+
         self.send_response(code)
-        self.send_header("Content-Type", "text/plain")
-        self.send_header("Content-Length", str(len(data)))
+
+        self.send_header(
+            "Content-Type",
+            "text/plain",
+        )
+
+        self.send_header(
+            "Content-Length",
+            str(len(data)),
+        )
+
         self.end_headers()
+
         try:
             self.wfile.write(data)
         except Exception:
             pass
 
     def do_GET(self):
-        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        query = urllib.parse.parse_qs(
+            urllib.parse.urlparse(
+                self.path
+            ).query
+        )
 
+        # ----------------------------------------------------
         # WhatsApp / Meta Webhook verification
+        # ----------------------------------------------------
+
         if WHATSAPP_VERIFY_TOKEN:
-            mode = query.get("hub.mode", [""])[0]
-            token = query.get("hub.verify_token", [""])[0]
-            challenge = query.get("hub.challenge", [""])[0]
-            if mode == "subscribe" and token == WHATSAPP_VERIFY_TOKEN:
-                self._send(200, challenge)
-                return
-            if "hub.mode" in query or "hub.verify_token" in query or "hub.challenge" in query:
-                self._send(403, "Forbidden")
+            mode = query.get(
+                "hub.mode",
+                [""],
+            )[0]
+
+            token = query.get(
+                "hub.verify_token",
+                [""],
+            )[0]
+
+            challenge = query.get(
+                "hub.challenge",
+                [""],
+            )[0]
+
+            if (
+                mode == "subscribe"
+                and token == WHATSAPP_VERIFY_TOKEN
+            ):
+                self._send(
+                    200,
+                    challenge,
+                )
                 return
 
-        # Health checks
-        if self.path in ("/", "/healthz", "/health"):
-            self._send(200, "ok")
+            if (
+                "hub.mode" in query
+                or "hub.verify_token" in query
+                or "hub.challenge" in query
+            ):
+                self._send(
+                    403,
+                    "Forbidden",
+                )
+                return
+
+        # ----------------------------------------------------
+        # Render health checks
+        # ----------------------------------------------------
+
+        if self.path in (
+            "/",
+            "/healthz",
+            "/health",
+        ):
+            self._send(
+                200,
+                "ok",
+            )
             return
 
-        self._send(404, "Not Found")
+        self._send(
+            404,
+            "Not Found",
+        )
 
     def do_POST(self):
         try:
-            length = int(self.headers.get("Content-Length", 0))
-            payload = json.loads(self.rfile.read(length) or b"{}")
-        except Exception:
-            payload = {}
-        self._send(200, "OK")
-        threading.Thread(target=_handle_webhook_payload, args=(payload,), daemon=True).start()
+            length = int(
+                self.headers.get(
+                    "Content-Length",
+                    0,
+                )
+            )
 
+            raw_body = self.rfile.read(
+                length
+            )
+
+            payload = json.loads(
+                raw_body or b"{}"
+            )
+
+        except Exception:
+            logging.exception(
+                "Invalid webhook payload"
+            )
+
+            payload = {}
+
+        # نرد على Meta مباشرة حتى لا تنتظر
+        self._send(
+            200,
+            "OK",
+        )
+
+        # معالجة الرسالة في Thread منفصل
+        threading.Thread(
+            target=_handle_webhook_payload,
+            args=(payload,),
+            daemon=True,
+        ).start()
+
+
+# ============================================================
+# Main
+# ============================================================
 
 def main():
-    missing = [name for name, value in (
-        ("WHATSAPP_TOKEN", WHATSAPP_TOKEN),
-        ("WHATSAPP_PHONE_NUMBER_ID", WHATSAPP_PHONE_NUMBER_ID),
-        ("WHATSAPP_VERIFY_TOKEN", WHATSAPP_VERIFY_TOKEN),
-    ) if not value]
+
+    missing = [
+        name
+        for name, value in (
+            (
+                "WHATSAPP_TOKEN",
+                WHATSAPP_TOKEN,
+            ),
+            (
+                "WHATSAPP_PHONE_NUMBER_ID",
+                WHATSAPP_PHONE_NUMBER_ID,
+            ),
+            (
+                "WHATSAPP_VERIFY_TOKEN",
+                WHATSAPP_VERIFY_TOKEN,
+            ),
+        )
+        if not value
+    ]
+
     if missing:
-        print(f"ناقص في .env: {', '.join(missing)}")
+        logging.error(
+            "ناقص في Environment Variables: %s",
+            ", ".join(missing),
+        )
         return
+
+    # ========================================================
+    # Render PORT
+    #
+    # Render يعطي PORT تلقائياً.
+    # إذا كنا محلياً ولم يوجد PORT:
+    # نستخدم WHATSAPP_PORT ثم 8445.
+    # ========================================================
+
+    port = int(
+        os.environ.get(
+            "PORT",
+            os.environ.get(
+                "WHATSAPP_PORT",
+                str(
+                    WHATSAPP_PORT
+                    or 8445
+                ),
+            ),
+        )
+    )
+
     ThreadingHTTPServer.allow_reuse_address = True
     ThreadingHTTPServer.daemon_threads = True
-    server = ThreadingHTTPServer(("0.0.0.0", WHATSAPP_PORT), WAHandler)
-    print(f"WhatsApp webhook يعمل على المنفذ {WHATSAPP_PORT}...")
-    print("اعرضه للإنترنت عبر:  ngrok http " + str(WHATSAPP_PORT))
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("إيقاف البوت.")
 
+    server = None
+
+    try:
+
+        server = ThreadingHTTPServer(
+            (
+                "0.0.0.0",
+                port,
+            ),
+            WAHandler,
+        )
+
+        logging.info(
+            "WhatsApp webhook started on 0.0.0.0:%s",
+            port,
+        )
+
+        if os.environ.get("RENDER"):
+            logging.info(
+                "Running on Render."
+            )
+
+            external_url = os.environ.get(
+                "RENDER_EXTERNAL_URL"
+            )
+
+            if external_url:
+                logging.info(
+                    "Render URL: %s",
+                    external_url,
+                )
+
+        else:
+            logging.info(
+                "Local WhatsApp webhook port: %s",
+                port,
+            )
+
+            logging.info(
+                "Local ngrok command: ngrok http %s",
+                port,
+            )
+
+        # ====================================================
+        # Server واحد فقط
+        # ====================================================
+
+        server.serve_forever()
+
+    except OSError as e:
+
+        logging.exception(
+            "Could not start WhatsApp webhook "
+            "on port %s: %s",
+            port,
+            e,
+        )
+
+        raise
+
+    except KeyboardInterrupt:
+
+        logging.info(
+            "إيقاف البوت."
+        )
+
+    finally:
+
+        if server is not None:
+            try:
+                server.server_close()
+            except Exception:
+                pass
+
+
+# ============================================================
+# Direct execution
+# ============================================================
 
 if __name__ == "__main__":
     main()
