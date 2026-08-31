@@ -1,0 +1,57 @@
+# Render blueprint (Infrastructure as Code) — no secrets committed.
+# All secret values are injected via the Render Dashboard environment variables.
+services:
+  - type: web
+    name: university-chatbot
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python run.py"
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Telegram
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      # Google Gemini
+      - key: GEMINI_API_KEY
+        sync: false
+      # Gmail SMTP (OTP)
+      - key: EMAIL_ADDRESS
+        sync: false
+      - key: EMAIL_APP_PASSWORD
+        sync: false
+      # GitHub (course files)
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        sync: false
+      # WhatsApp Business Cloud API
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_API_VERSION
+        sync: false
+        value: v21.0
+      # Admin IDs (comma-separated)
+      - key: ADMIN_TELEGRAM_IDS
+        sync: false
+      - key: ADMIN_WHATSAPP_NUMBERS
+        sync: false
+      # Firebase service-account JSON (single line) OR place firebase-key.json
+      - key: FIREBASE_KEY_JSON
+        sync: false
+      # Optional Gemini model overrides
+      - key: FAST_MODEL
+        sync: false
+        value: gemini-3.6-flash
+      - key: GEMINI_MODEL
+        sync: false
+        value: gemini-3.5-flash-lite
+      - key: INTENT_MODEL
+        sync: false
+        value: gemini-3.5-flash-lite
+      # Render provides PORT automatically

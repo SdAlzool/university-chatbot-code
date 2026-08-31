@@ -1,8 +1,12 @@
 import io
+import logging
 import smtplib
 from email.mime.text import MIMEText
 from pypdf import PdfReader
 from config import EMAIL_ADDRESS, EMAIL_APP_PASSWORD
+
+logger = logging.getLogger(__name__)
+
 
 def send_otp_email(to_email, otp_code):
     sender = (EMAIL_ADDRESS or "").strip()
@@ -17,16 +21,17 @@ def send_otp_email(to_email, otp_code):
     msg["Subject"] = "رمز تحقق - بوت خدمات الجامعة"
     msg["From"] = sender
     msg["To"] = recipient
-    server = smtplib.SMTP("smtp.gmail.com", 587, timeout=20)
     try:
+        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=20)
+        server.ehlo()
         server.starttls()
+        server.ehlo()
         server.login(sender, password)
         server.send_message(msg)
-    finally:
-        try:
-            server.quit()
-        except Exception:
-            server.close()
+        server.quit()
+    except Exception:
+        logger.exception("Gmail SMTP send failed to %s (recipient)", recipient)
+        raise
 
 def extract_pdf_text(pdf_bytes):
     pdf_file = io.BytesIO(pdf_bytes)

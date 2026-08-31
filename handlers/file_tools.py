@@ -34,13 +34,19 @@ async def handle_document(update, context):
     document = message.document
     name = document.file_name or "ملف"
     mime = document.mime_type or "application/octet-stream"
+    if document.file_size and document.file_size > MAX_INLINE_BYTES:
+        await message.reply_text("الملف كبير جداً (أكبر من 20MB). أرسل ملفاً أصغر.")
+        return
     await message.reply_text("جاري تحميل الملف…")
     try:
         telegram_file = await context.bot.get_file(document.file_id)
-        data = bytes(await telegram_file.download_as_bytearray())
+        data = bytes(await telegram_file.download_as_bytearray(
+            read_timeout=120,
+            connect_timeout=30,
+        ))
     except Exception:
         logging.exception("Telegram document download failed")
-        await message.reply_text("تعذر تحميل الملف.")
+        await message.reply_text("تعذر تحميل الملف. تأكد أن حجمه أقل من 20MB ثم حاول مرة أخرى.")
         return
     context.user_data["pending_file"] = await _ask_action(message, data, mime, name)
 
@@ -53,10 +59,13 @@ async def handle_photo(update, context):
     await message.reply_text("جاري تحميل الصورة…")
     try:
         telegram_file = await context.bot.get_file(photo.file_id)
-        data = bytes(await telegram_file.download_as_bytearray())
+        data = bytes(await telegram_file.download_as_bytearray(
+            read_timeout=120,
+            connect_timeout=30,
+        ))
     except Exception:
         logging.exception("Telegram photo download failed")
-        await message.reply_text("تعذر تحميل الصورة.")
+        await message.reply_text("تعذر تحميل الصورة. حاول إرسال صورة أصغر.")
         return
     context.user_data["pending_file"] = await _ask_action(message, data, "image/jpeg", "صورة")
 

@@ -1,43 +1,40 @@
-"""تشغيل البوت محلياً — ويب + واتساب + تيليجرام من مكان واحد."""
+"""تشغيل البوت — واتساب + تيليجرام من مكان واحد (محلي و Render)."""
 import logging
 import threading
-import os
 
 
 def _run_thread(target, name):
     try:
         target()
     except Exception:
-        logging.exception(f"{name} thread crashed")
+        logging.exception("%s thread crashed", name)
 
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.info("Starting all services...")
 
-    # Preload knowledge base
+    # Preload knowledge base (best effort — does not block startup on failure)
     try:
         from database import get_knowledge_base_text
         kb = get_knowledge_base_text()
-        logging.info(f"KB loaded: {len(kb)} chars")
+        logging.info("KB loaded: %s chars", len(kb))
     except Exception as e:
-        logging.warning(f"KB preload failed: {e}")
+        logging.warning("KB preload failed: %s", e)
 
-    # Start WhatsApp + Web server in background thread
     from whatsapp_bot import main as run_whatsapp
-    threading.Thread(
-        target=_run_thread, args=(run_whatsapp, "whatsapp+web"),
-        daemon=True, name="whatsapp+web",
-    ).start()
-
-    port = os.getenv("WHATSAPP_PORT") or "8445"
-    logging.info(f"Web chat: http://localhost:{port}/chat")
-    logging.info(f"Web main: http://localhost:{port}/web")
-
-    # Start Telegram in foreground
     from main import main as run_telegram
-    logging.info("Telegram bot starting...")
-    run_telegram()
+
+    threads = [
+        threading.Thread(target=_run_thread, args=(run_whatsapp, "whatsapp"),
+                         name="whatsapp", daemon=False),
+        threading.Thread(target=_run_thread, args=(run_telegram, "telegram"),
+                         name="telegram", daemon=False),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
 
 if __name__ == "__main__":

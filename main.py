@@ -1,8 +1,6 @@
-import socket
-import sys
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
-    ConversationHandler, CallbackQueryHandler
+    CallbackQueryHandler
 )
 from config import TOKEN
 from handlers.admin import (
@@ -31,14 +29,6 @@ from handlers.file_tools import (
 )
 
 def main():
-    lock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        lock.bind(("127.0.0.1", 8446))
-        lock.listen(1)
-    except OSError:
-        print("تنبيه: نسخة أخرى من البوت تعمل بالفعل. أوقفها قبل تشغيل نسخة جديدة.")
-        sys.exit(1)
-
     app = Application.builder().token(TOKEN).build()
 
     # Handlers
@@ -92,7 +82,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("البوت يعمل بنجاح مع ربط المواد التلقائي للطلاب...")
-    app.run_polling()
+    app.run_polling(timeout=30)
 
 if __name__ == "__main__":
     main()

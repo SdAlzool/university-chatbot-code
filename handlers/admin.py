@@ -58,18 +58,29 @@ async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"مجلدات المقررات في GitHub: {github_course_count}\n"
         f"المشرفون المضافون: {counts[3]}\n"
         f"المشرفون الأساسيون (.env): {bootstrap_count}\n\n"
-        "الأوامر:\n"
-        "/students - عرض الطلاب\n"
-        "/instructors - عرض الأساتذة\n"
+        "─── أوامر عرض ───\n"
+        "/students - عرض جميع الطلاب\n"
+        "/instructors - عرض جميع الأساتذة\n"
+        "/admins - عرض جميع المشرفين\n\n"
+        "─── إضافة ───\n"
         "/addstudent <id> <email> <name> - إضافة طالب\n"
+        "مثال: /addstudent 123456789 ali@uni.edu.sd علي أحمد\n\n"
         "/addinstructor <id> <email> <name> - إضافة أستاذ\n"
-        "/editstudent <id> <field> <value> - تعديل طالب\n"
-        "/editinstructor <id> <field> <value> - تعديل أستاذ\n"
-        "/deletestudent <id> - حذف طالب\n"
-        "/deleteinstructor <id> - حذف أستاذ\n\n"
-        "/admins - عرض المشرفين\n"
+        "مثال: /addinstructor 987654321 omar@uni.edu.sd عمر محمد\n\n"
         "/addadmin <Telegram_User_ID> - إضافة مشرف\n"
-        "/removeadmin <Telegram_User_ID> - إزالة مشرف مضاف"
+        "مثال: /addadmin 123456789\n\n"
+        "─── تعديل ───\n"
+        "/editstudent <id> <field> <value> - تعديل بيانات طالب\n"
+        "مثال: /editstudent 123456789 name علي الجديد\n\n"
+        "/editinstructor <id> <field> <value> - تعديل بيانات أستاذ\n"
+        "مثال: /editinstructor 987654321 email new@uni.edu.sd\n\n"
+        "─── حذف ───\n"
+        "/deletestudent <id> - حذف طالب\n"
+        "مثال: /deletestudent 123456789\n\n"
+        "/deleteinstructor <id> - حذف أستاذ\n"
+        "مثال: /deleteinstructor 987654321\n\n"
+        "/removeadmin <Telegram_User_ID> - إزالة مشرف\n"
+        "مثال: /removeadmin 123456789"
     )
 
 async def list_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -92,7 +103,10 @@ async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update):
         return
     if len(context.args) != 1 or not context.args[0].isdigit():
-        await update.effective_message.reply_text("الاستخدام: /addadmin <Telegram_User_ID>")
+        await update.effective_message.reply_text(
+            "الصيغة: /addadmin <Telegram_User_ID>\n"
+            "مثال: /addadmin 123456789"
+        )
         return
     await add_admin_by_id(update, int(context.args[0]))
 
@@ -114,7 +128,10 @@ async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update):
         return
     if len(context.args) != 1 or not context.args[0].isdigit():
-        await update.effective_message.reply_text("الاستخدام: /removeadmin <Telegram_User_ID>")
+        await update.effective_message.reply_text(
+            "الصيغة: /removeadmin <Telegram_User_ID>\n"
+            "مثال: /removeadmin 123456789"
+        )
         return
     await remove_admin_by_id(update, int(context.args[0]))
 
@@ -180,7 +197,9 @@ async def _edit_person(update: Update, context: ContextTypes.DEFAULT_TYPE, colle
         return
     if len(context.args) < 3:
         await update.effective_message.reply_text(
-            f"الاستخدام: /edit{label} <id> <field> <value>"
+            f"الصيغة: /edit{label} <المعرف> <اسم الحقل> <القيمة>\n"
+            f"مثال: /edit{label} 123456789 name الاسم الجديد\n"
+            f"الحقول المسموحة: name, email"
         )
         return
     person_id, field = context.args[:2]
@@ -210,7 +229,8 @@ async def _add_person(update: Update, context: ContextTypes.DEFAULT_TYPE, collec
         return
     if len(context.args) < 3:
         await update.effective_message.reply_text(
-            f"الاستخدام: /add{label} <id> <email> <name>"
+            f"الصيغة: /add{label} <المعرف> <البريد الإلكتروني> <الاسم>\n"
+            f"مثال: /add{label} 123456789 name@uni.edu.sd الاسم الكامل"
         )
         return
     person_id, email = context.args[:2]
@@ -245,7 +265,10 @@ async def _delete_person(update: Update, context: ContextTypes.DEFAULT_TYPE, col
     if not await require_admin(update):
         return
     if len(context.args) != 1:
-        await update.effective_message.reply_text(f"الاستخدام: /delete{label} <id>")
+        await update.effective_message.reply_text(
+            f"الصيغة: /delete{label} <المعرف>\n"
+            f"مثال: /delete{label} 123456789"
+        )
         return
     reference = db.collection(collection_name).document(context.args[0])
     exists = await asyncio.to_thread(lambda: reference.get().exists)
@@ -289,8 +312,9 @@ async def edit_person_by_text(update: Update, collection_name: str, label: str, 
     if not await require_admin(update):
         return
     await update.effective_message.reply_text(
-        f"استخدم /edit{label} {person_id} <field> <value> لتعديل حقل محدد.\n"
-        f"مثال: /edit{label} {person_id} name أحمد"
+        f"الصيغة: عدّل {label} <المعرف> <اسم الحقل> <القيمة>\n"
+        f"مثال: عدّل {label} {person_id} name الاسم الجديد\n"
+        f"الحقول المسموحة: name, email"
     )
 
 

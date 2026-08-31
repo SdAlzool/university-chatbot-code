@@ -4,9 +4,10 @@ import math
 import re
 import time
 from google.genai import types
-from config import client, MODEL_NAME, INTENT_MODEL_NAME
+from config import client, FAST_MODEL, MODEL_NAME, INTENT_MODEL_NAME
 from database import get_knowledge_base_text, get_student_by_chat_id, get_chat_language
 
+_fast_cooldown_until = 0.0
 _quota_cooldown_until = 0.0
 _lite_cooldown_until = 0.0
 
@@ -31,9 +32,46 @@ async def call_gemini_with_retry(func, *args, max_retries=3, **kwargs):
             else:
                 raise e
 
+# ============================================================
+# Security: Prompt Injection guard
+# Scans user input for common prompt-injection / jailbreak
+# / social-engineering patterns before it reaches the LLM.
+# ============================================================
+_INJECTION_PATTERNS = (
+    re.compile(r"ignore\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions|prompts|directions|context)", re.I),
+    re.compile(r"(disregard|forget|ignore).{0,30}(instructions|prompts|constraints|rules)", re.I),
+    re.compile(r"you\s+are\s+now\s+(a\s+)?(dan|developer|unfiltered|no\s+(restrictions|limits))", re.I),
+    re.compile(r"(act|behave|pretend)\s+as\s+(if\s+)?(a\s+)?(chatgpt|gpt|the\s+ai|superior|god)", re.I),
+    re.compile(r"reveal|expose|print|show.{0,20}(system\s+prompt|system\s+instruction|secret|api\s+key|password|token)", re.I),
+    re.compile(r"(تجاهل|انسى|نسي).{0,30}(التعليمات|الاوامر|القواعد|السياق)", re.I),
+    re.compile(r"انت\s+(الان\s+)?(دان|مساعد\s+بلا\s+قوانين|بلا\s+قيود|الفطر\s+المحرر)", re.I),
+)
+
+_INJECTION_SAFE_REPLY_EN = (
+    "I can't do that. I'm only here to help with university services. "
+    "If you need help, please contact university support."
+)
+_INJECTION_SAFE_REPLY_AR = (
+    "ما أقدر أعمل كده. أنا موجود فقط لمساعدة الطلاب في خدمات الجامعة. "
+    "لو محتاج مساعدة تواصل مع الدعم الجامعي."
+)
+
+
+def prompt_injection_guard(text):
+    """Returns True if the input looks like a prompt-injection attack."""
+    return any(p.search(text) for p in _INJECTION_PATTERNS)
+
+
+def injection_safe_reply(language="ar"):
+    return _INJECTION_SAFE_REPLY_EN if language == "en" else _INJECTION_SAFE_REPLY_AR
+
+
 _ADD_KEYWORDS = ("اضيف", "أضيف", "ارفع", "رفع", "اضافة", "إضافة", "زود", "اضيفو", "رفعت")
 _DELETE_KEYWORDS = ("احزف", "احذف", "حذف", "امسح", "مسح", "ازيل", "إزالة", "شيل", "امسحي", "احذفو")
-_SUMMARIZE_KEYWORDS = ("لخص", "لخّص", "تلخيص", "ملخص", "لخصلي")
+_SUMMARIZE_KEYWORDS = (
+    "لخص", "لخّص", "تلخيص", "ملخص", "لخصلي",
+    "summarize", "summarise", "summary", "sum up", "tldr", "tl;dr",
+)
 _LOGIN_KEYWORDS = ("تسجيل دخول", "سجل دخول", "دخول", "login", "لوجن", "سجلني")
 _LOGOUT_KEYWORDS = ("تسجيل خروج", "خروج", "logout", "لوقاوت")
 _COURSES_KEYWORDS = ("مقررات", "موادي", "المواد", "كورسات", "الكورسات", "المواد بتاعتي")
@@ -128,20 +166,40 @@ If the question is about something not in this information, politely say the inf
 """
 
 async def generate_answer(user_message, chat_id, instructor_data=None, language="ar"):
-    global _quota_cooldown_until, _lite_cooldown_until
+    global _fast_cooldown_until, _quota_cooldown_until, _lite_cooldown_until
+
+    # Security shield: reject prompt-injection attempts before any LLM call.
+    if prompt_injection_guard(user_message):
+        logging.warning(f"[SECURITY] Prompt-injection attempt blocked for chat_id={chat_id}")
+        return injection_safe_reply(language)
+
+    _g0 = time.time()
     try:
         knowledge_text = await asyncio.to_thread(get_knowledge_base_text)
     except Exception as e:
         logging.error(f"KB load error: {e}")
         knowledge_text = ""
+    logging.info(f"[TIMING] KB load took {time.time()-_g0:.2f}s")
     student_data = None
     if not instructor_data:
         _, student_data = await asyncio.to_thread(get_student_by_chat_id, chat_id)
     system_instruction = build_system_instruction(knowledge_text, student_data, instructor_data, language)
-    for model, is_lite in ((MODEL_NAME, False), (INTENT_MODEL_NAME, True)):
-        cooldown = _lite_cooldown_until if is_lite else _quota_cooldown_until
+
+    # 3-tier fallback chain (primary -> secondary -> local TF-IDF engine).
+    tiers = (
+        (FAST_MODEL, "fast"),
+        (MODEL_NAME, "quota"),
+        (INTENT_MODEL_NAME, "lite"),
+    )
+    for model, kind in tiers:
+        cooldown = {
+            "fast": _fast_cooldown_until,
+            "quota": _quota_cooldown_until,
+            "lite": _lite_cooldown_until,
+        }[kind]
         if time.time() < cooldown:
             continue
+        _t = time.time()
         try:
             response = await call_gemini_with_retry(
                 client.models.generate_content,
@@ -149,11 +207,15 @@ async def generate_answer(user_message, chat_id, instructor_data=None, language=
                 contents=user_message,
                 config=types.GenerateContentConfig(system_instruction=system_instruction),
             )
+            logging.info(f"[TIMING] Gemini({model}) generate took {time.time()-_t:.2f}s")
             return response.text
         except Exception as e:
+            logging.info(f"[TIMING] Gemini({model}) FAILED after {time.time()-_t:.2f}s")
             logging.error(f"Gemini ({model}) error: {e}")
             if _is_daily_quota_error(e):
-                if is_lite:
+                if kind == "fast":
+                    _fast_cooldown_until = time.time() + 600
+                elif kind == "lite":
                     _lite_cooldown_until = time.time() + 600
                 else:
                     _quota_cooldown_until = time.time() + 600
@@ -227,12 +289,12 @@ def parse_language_toggle(text):
     return None
 
 
+# FIXED: Stored language preference is now checked FIRST before falling back to detection
 def get_effective_language(chat_id, text):
-    detected = detect_text_language(text)
-    if detected:
-        return detected
     stored = get_chat_language(chat_id)
-    return stored if stored in ("ar", "en") else "ar"
+    if stored in ("ar", "en"):
+        return stored
+    return detect_text_language(text)
 
 
 def _norm_ar(text):
@@ -324,7 +386,7 @@ def fallback_kb_answer(question, language="ar"):
                 idf = math.log((n + 1) / (df[t] + 1)) + 1.0
                 score += idf * 2.5 if t in topic_ws else idf
         if score > best_score:
-            best_score, best = score, p
+            best_score, best = score, best
     if not best or best_score <= 0:
         return _NO_INFO_REPLY_EN if language == "en" else _NO_INFO_REPLY
     matched = [t for t in tokens if t in _word_set(best)]

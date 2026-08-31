@@ -7,7 +7,7 @@
 import asyncio
 import json
 import logging
-import random
+import secrets
 import threading
 import time
 import urllib.parse
@@ -36,11 +36,6 @@ from utils import send_otp_email, extract_pdf_text
 from handlers.admin import is_stored_admin
 from handlers.courses import _all_courses
 from handlers.general import _handle_admin_command
-from web_chat import (
-    CHAT_HTML, CHAT_FULL_HTML,
-    handle_admin, handle_chat, handle_upload, handle_voice,
-    handle_login_start, handle_login_verify, handle_logout,
-)
 
 WA_BASE = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}"
 WA_MSG_URL = f"{WA_BASE}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
@@ -204,9 +199,15 @@ def wa_help(phone):
         "📚 المقررات والشيتات (للمسجلين).\n"
         "📄 أرسل ملفاً وسألخصه أو أترجمه.\n"
         "🎙️ أرسل صوتاً وسأحوّله لنص.\n\n"
-        "🔑 سجّل الدخول لفتح الشيتات.\n"
-        "👨‍🏫 للدكاترة: إدارة المحتوى.\n\n"
-        "اكتب سؤالك مباشرة، أو اطلب القائمة."
+        "🔑 سجّل الدخول لفتح الشيتات.\n\n"
+        "─── أوامر الأدمن ───\n"
+        "أضف طالب <المعرف> <البريد> <الاسم>\n"
+        "مثال: أضف طالب 123456789 ali@uni.edu.sd علي\n\n"
+        "أضف دكتور <المعرف> <البريد> <الاسم>\n"
+        "مثال: أضف دكتور 987654321 omar@uni.edu.sd عمر\n\n"
+        "احذف طالب <المعرف>\n"
+        "احذف دكتور <المعرف>\n\n"
+        "اعرض الطلاب أو عرض الأساتذة"
     ))
 
 
@@ -285,10 +286,7 @@ async def handle_login_id(phone, user_id):
         send_text(phone, "لا يوجد بريد إلكتروني لهذا الحساب.")
         _reset_state(phone)
         return
-    code = str(random.randint(100000, 999999))
-    state = _get_state(phone)
-    state["data"] = {"code": code, "user_id": user_id, "role": role, "expires": time.time() + 300}
-    state["state"] = "LOGIN_ASK_OTP"
+    code = str(secrets.randbelow(900000) + 100000)
     try:
         await asyncio.to_thread(send_otp_email, data["email"], code)
     except Exception:
@@ -296,6 +294,9 @@ async def handle_login_id(phone, user_id):
         logging.exception("Unable to send OTP email")
         send_text(phone, "تعذر إرسال رمز التحقق إلى البريد الإلكتروني.")
         return
+    state = _get_state(phone)
+    state["data"] = {"code": code, "user_id": user_id, "role": role, "expires": time.time() + 300}
+    state["state"] = "LOGIN_ASK_OTP"
     send_text(phone, "تم إرسال رمز التحقق إلى بريدك الإلكتروني. اكتبه هنا خلال 5 دقائق:")
 
 
@@ -368,8 +369,16 @@ async def wa_summarize(phone):
         if not text.strip():
             send_text(phone, "هذا الملف ليس PDF أو لا يمكن استخراج نص منه للتلخيص.")
             return
-        result = await call_gemini_with_retry(client.models.generate_content, model=MODEL_NAME,
-                                              contents=f"لخص في نقاط واضحة:\n{text[:6000]}")
+        result = await call_gemini_with_retry(
+            client.models.generate_content,
+            model=MODEL_NAME,
+            contents=(
+                "لخص النص التالي في نقاط واضحة ومرتبة. "
+                "مهم جداً: اكتشف لغة النص الأصلي واكتب الملخص بنفس تلك اللغة تماماً "
+                "(لو النص إنجليزي اكتب الملخص بالإنجليزي، ولو عربي اكتب الملخص بالعربي).\n\n"
+                f"النص:\n{text[:6000]}"
+            ),
+        )
         send_text(phone, f"ملخص {file['name']}:\n\n{result.text[:4000]}")
     except Exception:
         logging.exception("Summarise failed")
@@ -842,14 +851,15 @@ async def process_wa_message(phone, msg):
         await wa_add_new_name(phone, text)
         return
     if current == "UPLOAD_ASK_ACTION":
-        if any(w in text for w in ("لخص", "لخّص", "تلخيص كنص")):
-            await wa_process_upload(phone, "summarize")
-        elif any(w in text for w in ("ترجمة كنص", "ترجم كنص")):
-            await wa_process_upload(phone, "translate")
-        elif any(w in text for w in ("تلخيص pdf", "تلخيص بي دي اف", "ملخص pdf")):
+        t = text.lower()
+        if any(w in t for w in ("تلخيص pdf", "تلخيص بي دي اف", "ملخص pdf", "summarize pdf", "summary pdf", "summarize as pdf")):
             await wa_process_upload(phone, "summarize_pdf")
-        elif any(w in text for w in ("ترجمة pdf", "ترجمة بي دي اف", "ترجمة ملف")):
+        elif any(w in t for w in ("ترجمة pdf", "ترجمة بي دي اف", "ترجمة ملف", "translate pdf", "translate as pdf")):
             await wa_process_upload(phone, "translate_pdf")
+        elif any(w in t for w in ("لخص", "لخّص", "تلخيص كنص", "summarize", "summarise", "summary")):
+            await wa_process_upload(phone, "summarize")
+        elif any(w in t for w in ("ترجمة كنص", "ترجم كنص", "translate")):
+            await wa_process_upload(phone, "translate")
         else:
             send_text(phone, "استخدم الأزرار أو اكتب: لخص / ترجم")
         return
@@ -885,17 +895,6 @@ class WAHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def _environ(self):
-        """Build a minimal WSGI environ dict for cgi.FieldStorage."""
-        ct = self.headers.get("Content-Type", "")
-        cl = int(self.headers.get("Content-Length", 0))
-        return {
-            "REQUEST_METHOD": "POST",
-            "CONTENT_TYPE": ct,
-            "CONTENT_LENGTH": cl,
-            "wsgi.input": self.rfile,
-        }
-
     def _send(self, code, body):
         data = body.encode() if isinstance(body, str) else body
         self.send_response(code)
@@ -907,79 +906,29 @@ class WAHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
-    def _send_json(self, code, obj):
-        body = json.dumps(obj, ensure_ascii=False)
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Content-Length", str(len(body.encode())))
-        self.end_headers()
-        try:
-            self.wfile.write(body.encode())
-        except Exception:
-            pass
-
-    def _send_html(self, code, html):
-        data = html.encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        try:
-            self.wfile.write(data)
-        except Exception:
-            pass
-
     def do_GET(self):
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+
+        # WhatsApp / Meta Webhook verification
+        if WHATSAPP_VERIFY_TOKEN:
+            mode = query.get("hub.mode", [""])[0]
+            token = query.get("hub.verify_token", [""])[0]
+            challenge = query.get("hub.challenge", [""])[0]
+            if mode == "subscribe" and token == WHATSAPP_VERIFY_TOKEN:
+                self._send(200, challenge)
+                return
+            if "hub.mode" in query or "hub.verify_token" in query or "hub.challenge" in query:
+                self._send(403, "Forbidden")
+                return
+
+        # Health checks
         if self.path in ("/", "/healthz", "/health"):
             self._send(200, "ok")
             return
-        if self.path == "/web" or self.path.startswith("/web?"):
-            self._send_html(200, CHAT_HTML)
-            return
-        if self.path == "/chat" or self.path.startswith("/chat?"):
-            self._send_html(200, CHAT_FULL_HTML)
-            return
-        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        if WHATSAPP_VERIFY_TOKEN and query.get("hub.verify_token") == [WHATSAPP_VERIFY_TOKEN]:
-            self._send(200, query.get("hub.challenge", [""])[0])
-        else:
-            self._send(403, "Forbidden")
+
+        self._send(404, "Not Found")
 
     def do_POST(self):
-        ct = self.headers.get("Content-Type", "")
-
-        if self.path in ("/api/chat", "/api/upload", "/api/voice",
-                 "/api/login/start", "/api/login/verify", "/api/logout",
-                 "/api/admin"):
-            try:
-                length = int(self.headers.get("Content-Length", 0))
-                body = json.loads(self.rfile.read(length) or b"{}")
-            except Exception:
-                body = {}
-            try:
-                if self.path == "/api/chat":
-                    result = handle_chat(body)
-                elif self.path == "/api/admin":
-                    result = handle_admin(body)
-                elif self.path == "/api/upload":
-                    result = handle_upload(body)
-                elif self.path == "/api/voice":
-                    result = handle_voice(body)
-                elif self.path == "/api/login/start":
-                    result = handle_login_start(body)
-                elif self.path == "/api/login/verify":
-                    result = handle_login_verify(body)
-                elif self.path == "/api/logout":
-                    result = handle_logout(body)
-                else:
-                    result = {"reply": "Unknown endpoint"}
-            except Exception as e:
-                logging.error("Web API error (%s): %s", self.path, e)
-                result = {"reply": "حصل خطأ تقني."}
-            self._send_json(200, result)
-            return
-
         try:
             length = int(self.headers.get("Content-Length", 0))
             payload = json.loads(self.rfile.read(length) or b"{}")

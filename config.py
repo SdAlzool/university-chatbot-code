@@ -35,12 +35,14 @@ ADMIN_WHATSAPP_NUMBERS = {
     n.strip() for n in os.getenv("ADMIN_WHATSAPP_NUMBERS", "").split(",") if n.strip()
 }
 
-ADMIN_WEB_IDS = {
-    u.strip() for u in os.getenv("ADMIN_WEB_IDS", "").split(",") if u.strip()
-}
-
-MODEL_NAME = "gemini-3.6-flash"
-INTENT_MODEL_NAME = "gemini-3.5-flash-lite"
+# Gemini model names — override via .env (FAST_MODEL / GEMINI_MODEL / INTENT_MODEL).
+# 3-tier fallback chain (primary -> secondary -> local TF-IDF engine):
+#   FAST_MODEL      : primary tier  (gemini-3.6-flash)
+#   GEMINI_MODEL    : secondary tier (gemini-3.5-flash-lite)
+#   INTENT_MODEL    : used for intent classification
+FAST_MODEL = os.getenv("FAST_MODEL", "gemini-3.6-flash")
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+INTENT_MODEL_NAME = os.getenv("INTENT_MODEL", "gemini-3.5-flash-lite")
 
 client = genai.Client(api_key=GEMINI_KEY)
 

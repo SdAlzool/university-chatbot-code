@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import re
+import time
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from google.genai import types
 from config import client, MODEL_NAME
@@ -77,7 +78,11 @@ async def _handle_admin_command(update, context, text):
         if admin_id:
             await edit_person_by_text(update, collection_name, label, str(admin_id), text)
         else:
-            await update.effective_message.reply_text(f"استخدم /edit{label} <id> <field> <value> لتعديل شخص ما.")
+            await update.effective_message.reply_text(
+                f"الصيغة: عدّل {label} <المعرف> <اسم الحقل> <القيمة الجديدة>\n"
+                f"مثال: عدّل {label} 123456 name الاسم الجديد\n"
+                f"الحقول المسموحة: name, email"
+            )
         return True
     if has_add:
         if admin_id and email_match:
@@ -85,15 +90,19 @@ async def _handle_admin_command(update, context, text):
             await add_person_by_text(update, collection_name, label, str(admin_id), email_match.group(), name)
         else:
             await update.effective_message.reply_text(
-                f"استخدم الصيغة: أضف {label} <المعرف> <البريد> <الاسم>\n"
-                f"مثال: أضف {label} 123456 name@example.com أحمد"
+                f"الصيغة: أضف {label} <المعرف> <البريد الإلكتروني> <الاسم>\n"
+                f"مثال: أضف {label} 123456789 name@uni.edu.sd الاسم الكامل\n\n"
+                f"ملاحظة: المعرف رقمي (5 أرقام على الأقل)"
             )
         return True
     if has_del:
         if admin_id:
             await delete_person_by_text(update, collection_name, label, str(admin_id))
         else:
-            await update.effective_message.reply_text(f"استخدم الصيغة: احذف {label} <المعرف>")
+            await update.effective_message.reply_text(
+                f"الصيغة: احذف {label} <المعرف>\n"
+                f"مثال: احذف {label} 123456789"
+            )
         return True
     if asks_list:
         if collection_name == "students":
@@ -111,9 +120,15 @@ HELP_TEXT = (
     "📚 <b>المقررات والشيتات</b>: اعرض المقررات واطلب الملفات (للمسجلين).\n"
     "📄 <b>رفع ملف</b>: أرسل لي ملف PDF/Word/صورة وسألخصه أو أترجمه.\n"
     "🎙️ <b>رسائل صوتية</b>: أرسل صوتاً وسأحوّله إلى نص وأجيبك.\n\n"
-    "🔑 <b>تسجيل الدخول</b>: لفتح المقررات والشيتات اكتب /login\n"
-    "👨‍🏫 <b>للدكاترة والأدمن</b>: إدارة المحتوى عبر /addcontent و /deletecontent،\n"
-    "وعرض الطلاب والدكاترة بأوامر مثل: <i>عرض الطلاب</i> أو <i>عايز اشوف الناس</i>.\n\n"
+    "🔑 <b>تسجيل الدخول</b>: لفتح المقررات والشيتات اكتب /login\n\n"
+    "─── أوامر الأدمن ───\n"
+    "أضف طالب <المعرف> <البريد> <الاسم>\n"
+    "مثال: أضف طالب 123456789 ali@uni.edu.sd علي أحمد\n\n"
+    "أضف دكتور <المعرف> <البريد> <الاسم>\n"
+    "مثال: أضف دكتور 987654321 omar@uni.edu.sd عمر محمد\n\n"
+    "احذف طالب <المعرف> | احذف دكتور <المعرف>\n"
+    "مثال: احذف طالب 123456789\n\n"
+    "عرض الطلاب | عرض الأساتذة | عرض الأدمن\n\n"
     "اكتب سؤالك ببساطة أو أرسل ملفاً للبدء 🚀"
 )
 
@@ -152,6 +167,7 @@ async def handle_welcome_buttons(update, context):
 async def handle_message(update, context):
     from .auth import logout
     from .courses import get_sheet, show_courses, summarize_last_file
+    t0 = time.time()
     text = update.message.text.strip()
     chat_id = update.effective_chat.id
     if text.lower() in ("مساعدة", "help", "المساعدة", "الخدمات", "menu", "قائمة"):
@@ -170,17 +186,23 @@ async def handle_message(update, context):
         return
     if await user_is_admin(update):
         if await _handle_admin_command(update, context, text):
+            logging.info(f"[TIMING] admin-command path finished in {time.time()-t0:.2f}s")
             return
     _, instructor = await asyncio.to_thread(get_instructor_by_chat_id, chat_id)
     intent = await detect_user_intent(text, is_instructor=bool(instructor))
+    logging.info(f"[TIMING] intent-detection took {time.time()-t0:.2f}s")
     if intent in ("GET_COURSES", "DR_GET_COURSES"):
         await show_courses(update, context)
+        logging.info(f"[TIMING] GET_COURSES total {time.time()-t0:.2f}s")
     elif intent in ("GET_SHEETS", "DR_GET_SHEETS"):
         await get_sheet(update, context)
+        logging.info(f"[TIMING] GET_SHEETS total {time.time()-t0:.2f}s")
     elif intent == "SUMMARIZE":
         await summarize_last_file(update, context)
+        logging.info(f"[TIMING] SUMMARIZE total {time.time()-t0:.2f}s")
     elif intent == "LOGOUT":
         await logout(update, context)
+        logging.info(f"[TIMING] LOGOUT total {time.time()-t0:.2f}s")
     elif intent == "LOGIN":
         await update.message.reply_text("اكتب /login لبدء تسجيل الدخول.")
     elif intent == "DR_ADD_CONTENT":
@@ -190,6 +212,7 @@ async def handle_message(update, context):
     else:
         language = get_effective_language(str(chat_id), text)
         await update.message.reply_text(await generate_answer(text, chat_id, instructor_data=instructor, language=language))
+        logging.info(f"[TIMING] FULL reply (intent {time.time()-t0:.2f}s total) — note this includes intent-detection ({time.time()-(t0+0)}s since start)")
 
 
 async def handle_voice(update, context):

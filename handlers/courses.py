@@ -104,7 +104,16 @@ async def summarize_last_file(update, context):
         if not text.strip():
             await update.message.reply_text("هذا الملف ليس PDF أو لا يمكن استخراج نص منه للتلخيص.")
             return
-        result = await call_gemini_with_retry(client.models.generate_content, model=MODEL_NAME, contents=f"لخص في نقاط واضحة:\n{text[:6000]}")
+        result = await call_gemini_with_retry(
+            client.models.generate_content,
+            model=MODEL_NAME,
+            contents=(
+                "لخص النص التالي في نقاط واضحة ومرتبة. "
+                "مهم جداً: اكتشف لغة النص الأصلي واكتب الملخص بنفس تلك اللغة تماماً "
+                "(لو النص إنجليزي اكتب الملخص بالإنجليزي، ولو عربي اكتب الملخص بالعربي).\n\n"
+                f"النص:\n{text[:6000]}"
+            ),
+        )
         await update.message.reply_text(f"ملخص {file['name']}:\n\n{result.text}")
     except Exception:
         logging.exception("Summarisation failed")
