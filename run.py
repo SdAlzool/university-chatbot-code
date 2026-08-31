@@ -1,5 +1,6 @@
 """تشغيل البوت — واتساب + تيليجرام من مكان واحد (محلي و Render)."""
 import logging
+import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
