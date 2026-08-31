@@ -2420,6 +2420,9 @@ class WAHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    def do_HEAD(self):
+        self.do_GET()
+
     def do_GET(self):
         try:
             parsed = urllib.parse.urlparse(self.path)
