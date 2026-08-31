@@ -1,36 +1,41 @@
 import io
 import logging
-import smtplib
-from email.mime.text import MIMEText
 from pypdf import PdfReader
-from config import EMAIL_ADDRESS, EMAIL_APP_PASSWORD
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail, Email, To, Content
 
 logger = logging.getLogger(__name__)
 
 
 def send_otp_email(to_email, otp_code):
-    sender = (EMAIL_ADDRESS or "").strip()
-    password = "".join((EMAIL_APP_PASSWORD or "").split())
+    from config import SENDGRID_API_KEY, SENDGRID_FROM_EMAIL
+
+    api_key = (SENDGRID_API_KEY or "").strip()
+    from_email = (SENDGRID_FROM_EMAIL or "").strip()
     recipient = (to_email or "").strip()
-    if not sender or not password or not recipient:
-        raise ValueError("Email settings or recipient are missing")
-    msg = MIMEText(
-        f"رمز التحقق الخاص بك هو: {otp_code}\nصالح لمدة 5 دقائق.",
-        _charset="utf-8",
+
+    if not api_key or not from_email or not recipient:
+        raise ValueError("SendGrid settings or recipient are missing")
+
+    subject = "رمز تحقق - بوت خدمات الجامعة"
+    html_content = (
+        f"<p>رمز التحقق الخاص بك هو: <strong>{otp_code}</strong></p>"
+        f"<p>صالح لمدة 5 دقائق.</p>"
     )
-    msg["Subject"] = "رمز تحقق - بوت خدمات الجامعة"
-    msg["From"] = sender
-    msg["To"] = recipient
+
+    message = Mail(
+        from_email=Email(from_email),
+        to_emails=To(recipient),
+        subject=subject,
+        html_content=Content("text/html", html_content),
+    )
+
     try:
-        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=20)
-        server.ehlo()
-        server.starttls()
-        server.ehlo()
-        server.login(sender, password)
-        server.send_message(msg)
-        server.quit()
+        client = SendGridAPIClient(api_key)
+        response = client.send(message)
+        logger.info("SendGrid OTP sent to %s (status=%s)", recipient, response.status_code)
     except Exception:
-        logger.exception("Gmail SMTP send failed to %s (recipient)", recipient)
+        logger.exception("SendGrid send failed to %s", recipient)
         raise
 
 def extract_pdf_text(pdf_bytes):

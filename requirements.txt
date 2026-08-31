@@ -8,3 +8,4 @@ python-dotenv==1.2.2
 reportlab==5.0.0
 arabic-reshaper==3.0.1
 python-bidi==0.6.11
+sendgrid==6.11.0

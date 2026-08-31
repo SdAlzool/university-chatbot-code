@@ -16,10 +16,15 @@ services:
       # Google Gemini
       - key: GEMINI_API_KEY
         sync: false
-      # Gmail SMTP (OTP)
-      - key: EMAIL_ADDRESS
+      # Gmail SMTP (OTP) — DEPRECATED: Render blocks SMTP on free tier
+      # - key: EMAIL_ADDRESS
+      #   sync: false
+      # - key: EMAIL_APP_PASSWORD
+      #   sync: false
+      # SendGrid (OTP via HTTP API)
+      - key: SENDGRID_API_KEY
         sync: false
-      - key: EMAIL_APP_PASSWORD
+      - key: SENDGRID_FROM_EMAIL
         sync: false
       # GitHub (course files)
       - key: GITHUB_TOKEN
