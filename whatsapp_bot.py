@@ -947,6 +947,8 @@ def main():
     if missing:
         print(f"ناقص في .env: {', '.join(missing)}")
         return
+    ThreadingHTTPServer.allow_reuse_address = True
+    ThreadingHTTPServer.daemon_threads = True
     server = ThreadingHTTPServer(("0.0.0.0", WHATSAPP_PORT), WAHandler)
     print(f"WhatsApp webhook يعمل على المنفذ {WHATSAPP_PORT}...")
     print("اعرضه للإنترنت عبر:  ngrok http " + str(WHATSAPP_PORT))
