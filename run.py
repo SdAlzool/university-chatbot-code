@@ -43,8 +43,11 @@ def main():
     from whatsapp_bot import main as run_whatsapp
     from main import main as run_telegram
 
-    # WhatsApp runs in a background thread (plain HTTP server — no signal handlers).
-    # Telegram MUST run in the main thread: python-telegram-bot's asyncio runtime
+    # WhatsApp webhook is the single HTTP server on Render's PORT. It answers
+    # health checks (/ , /health, /healthz) and the Meta webhook. It runs in a
+    # background thread (plain HTTP server — no signal handlers).
+    #
+    # Telegram runs in the main thread: python-telegram-bot's asyncio runtime
     # calls add_signal_handler, which only works in the main thread of the main
     # interpreter (fails on Linux/Render otherwise).
     whatsapp_thread = threading.Thread(target=_run_thread, args=(run_whatsapp, "whatsapp"),
