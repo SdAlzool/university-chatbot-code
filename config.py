@@ -48,11 +48,22 @@ client = genai.Client(api_key=GEMINI_KEY)
 
 if not firebase_admin._apps:
     firebase_key_json = os.getenv("FIREBASE_KEY_JSON")
-    if firebase_key_json:
-        cred = credentials.Certificate(json.loads(firebase_key_json))
+    if firebase_key_json and firebase_key_json.strip():
+        try:
+            cred = credentials.Certificate(json.loads(firebase_key_json))
+            firebase_admin.initialize_app(cred)
+            logging.info("Firebase initialized from FIREBASE_KEY_JSON env var")
+        except Exception as e:
+            logging.error("Failed to initialize Firebase from env var: %s", e)
+    elif os.path.exists("firebase-key.json"):
+        try:
+            cred = credentials.Certificate("firebase-key.json")
+            firebase_admin.initialize_app(cred)
+            logging.info("Firebase initialized from firebase-key.json file")
+        except Exception as e:
+            logging.error("Failed to initialize Firebase from file: %s", e)
     else:
-        cred = credentials.Certificate("firebase-key.json")
-    firebase_admin.initialize_app(cred)
+        logging.error("FIREBASE_KEY_JSON env var is empty AND firebase-key.json not found!")
 
 db = firestore.client()
 
