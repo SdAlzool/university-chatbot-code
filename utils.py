@@ -15,7 +15,12 @@ def send_otp_email(to_email, otp_code):
     recipient = (to_email or "").strip()
 
     if not api_key or not from_email or not recipient:
-        raise ValueError("SendGrid settings or recipient are missing")
+        raise ValueError(
+            f"SendGrid settings missing: "
+            f"api_key={'SET' if api_key else 'EMPTY'}, "
+            f"from={'SET' if from_email else 'EMPTY'}, "
+            f"to={'SET' if recipient else 'EMPTY'}"
+        )
 
     subject = "رمز تحقق - بوت خدمات الجامعة"
     html_content = (
@@ -30,13 +35,14 @@ def send_otp_email(to_email, otp_code):
         html_content=Content("text/html", html_content),
     )
 
-    try:
-        client = SendGridAPIClient(api_key)
-        response = client.send(message)
-        logger.info("SendGrid OTP sent to %s (status=%s)", recipient, response.status_code)
-    except Exception:
-        logger.exception("SendGrid send failed to %s", recipient)
-        raise
+    client = SendGridAPIClient(api_key)
+    response = client.send(message)
+    logger.info("SendGrid OTP sent to %s (status=%s)", recipient, response.status_code)
+
+    if response.status_code >= 400:
+        raise Exception(f"SendGrid API error {response.status_code}: {response.body}")
+
+    return response
 
 def extract_pdf_text(pdf_bytes):
     pdf_file = io.BytesIO(pdf_bytes)
