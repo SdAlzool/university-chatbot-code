@@ -45,7 +45,9 @@ def _phone_int(phone):
 
 
 def _make_update(phone):
-    message = SimpleNamespace(reply_text=lambda t, **kw: send_text(phone, t))
+    async def _reply_text(t, **kw):
+        send_text(phone, t)
+    message = SimpleNamespace(reply_text=_reply_text)
     return SimpleNamespace(
         effective_user=SimpleNamespace(id=_phone_int(phone), full_name=""),
         effective_chat=SimpleNamespace(id="wa:" + phone),
