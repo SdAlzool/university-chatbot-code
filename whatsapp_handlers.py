@@ -599,6 +599,41 @@ async def route_text(phone, text):
         wa_show_main_menu(phone)
         return
 
+    # Admin panel text commands
+    if is_admin:
+        t = text.strip().lower()
+        if any(w in t for w in ("إدارة المحتوى", "لوحة الإدارة", "لوحة الادارة", "الأدمن", "الادمنية", "admin panel", "admin")):
+            wa_admin_menu(phone)
+            return
+        if any(w in t for w in ("إضافة طالب", "اضافة طالب", "add student")):
+            from handlers.wa_admin_panel import wa_admin_add_prompt
+            wa_admin_add_prompt(phone, "students")
+            return
+        if any(w in t for w in ("إضافة دكتور", "اضافة دكتور", "add instructor", "addinstructor")):
+            from handlers.wa_admin_panel import wa_admin_add_prompt
+            wa_admin_add_prompt(phone, "instructors")
+            return
+        if any(w in t for w in ("إضافة مشرف", "اضافة مشرف", "add admin")):
+            from handlers.wa_admin_panel import wa_admin_add_prompt
+            wa_admin_add_prompt(phone, "admins")
+            return
+        if any(w in t for w in ("عرض الطلاب", "قائمة الطلاب", "list students")):
+            from handlers.wa_admin_panel import wa_admin_list
+            wa_admin_list(phone, "students")
+            return
+        if any(w in t for w in ("عرض الأساتذة", "عرض الاساتذة", "قائمة الأساتذة", "list instructors")):
+            from handlers.wa_admin_panel import wa_admin_list
+            wa_admin_list(phone, "instructors")
+            return
+        if any(w in t for w in ("حذف طالب", "delete student")):
+            from handlers.wa_admin_panel import wa_admin_del_list
+            wa_admin_del_list(phone, "students")
+            return
+        if any(w in t for w in ("حذف دكتور", "delete instructor")):
+            from handlers.wa_admin_panel import wa_admin_del_list
+            wa_admin_del_list(phone, "instructors")
+            return
+
     if is_admin and await _handle_admin_command(_make_update(phone), None, text):
         return
 
