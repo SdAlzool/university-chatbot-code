@@ -24,6 +24,7 @@ from utils import send_otp_email, extract_pdf_text
 from handlers.admin import is_stored_admin
 from handlers.courses import _all_courses
 from handlers.general import _handle_admin_command
+from handlers.wa_admin_panel import wa_admin_callback, wa_admin_menu, wa_admin_add_execute
 
 from whatsapp_api import (
     send_text, send_buttons, send_list, upload_media,
@@ -97,7 +98,9 @@ async def wa_menu_action(phone, action):
         send_text(phone, "أرسل الملف الآن، وسأسألك: تلخيص أم ترجمة؟")
     elif action == "admin":
         instructor_id, _ = await asyncio.to_thread(get_instructor_by_chat_id, "wa:" + phone)
-        if instructor_id or wa_is_admin(phone):
+        if wa_is_admin(phone):
+            wa_admin_menu(phone)
+        elif instructor_id:
             send_buttons(phone, "اختر:", [("admin:add", "إضافة محتوى"), ("admin:delete", "حذف محتوى")])
         else:
             send_text(phone, "هذه الخدمة لأعضاء هيئة التدريس أو الأدمن فقط.")
@@ -511,6 +514,11 @@ async def handle_voice(phone, media_id):
 # ============================================================
 
 async def handle_callback(phone, payload):
+    # Admin panel callbacks (waadm:*)
+    if payload.startswith("waadm:"):
+        if wa_admin_callback(phone, payload):
+            return
+
     if payload == "login":
         start_login(phone)
         return
@@ -743,6 +751,12 @@ async def process_wa_message(phone, msg):
     if current in ("ADD_MENU", "ADD_SELECT_COURSE", "ADD_NEW_CONFIRM", "ADD_WAIT_FILE",
                     "DEL_MENU", "DEL_SELECT_COURSE", "DEL_SELECT_FILE", "DEL_FILE_CONFIRM", "DEL_WHOLE_CONFIRM"):
         send_text(phone, "استخدم الأزرار أعلاه للمتابعة.")
+        return
+
+    # Admin panel add/edit modes
+    if current and current.startswith("WAADMIN_ADD_"):
+        section = current.replace("WAADMIN_ADD_", "").lower()
+        wa_admin_add_execute(phone, section, text)
         return
 
     await route_text(phone, text)
