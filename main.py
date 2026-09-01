@@ -27,6 +27,7 @@ from handlers.general import (
 from handlers.file_tools import (
     handle_document, handle_photo, handle_file_action
 )
+from handlers.admin_panel import admin_panel, _admin_callback
 
 def main():
     app = Application.builder().token(TOKEN).build()
@@ -62,8 +63,12 @@ def main():
     app.add_handler(CommandHandler("deletestudent", delete_student))
     app.add_handler(CommandHandler("deleteinstructor", delete_instructor))
 
+    # Admin Panel (new interactive)
+    app.add_handler(CommandHandler("adminpanel", admin_panel))
+
     # Callback Queries
     app.add_handler(CallbackQueryHandler(handle_welcome_buttons, pattern="^btn_guest_mode$"))
+    app.add_handler(CallbackQueryHandler(_admin_callback, pattern=r"^ap:"))
     app.add_handler(CallbackQueryHandler(handle_sheet_button, pattern="^sheet:"))
     app.add_handler(CallbackQueryHandler(handle_file_button, pattern="^filesel:"))
     app.add_handler(CallbackQueryHandler(handle_delmenu_button, pattern="^delmenu:"))
