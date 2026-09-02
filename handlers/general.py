@@ -3,7 +3,7 @@ import asyncio
 import logging
 import re
 import time
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
 from google.genai import types
 from config import client, MODEL_NAME
 from database import get_instructor_by_chat_id, get_student_by_chat_id, set_chat_language
@@ -114,22 +114,14 @@ async def _handle_admin_command(update, context, text):
 
 
 HELP_TEXT = (
-    "🎓 <b>بوت خدمات الجامعة</b>\n"
-    "أنا هنا لمساعدتك في الآتي:\n\n"
-    "💬 <b>أسئلة عامة</b>: اسألني أي سؤال عن الجامعة أو المقررات.\n"
-    "📚 <b>المقررات والشيتات</b>: اعرض المقررات واطلب الملفات (للمسجلين).\n"
-    "📄 <b>رفع ملف</b>: أرسل لي ملف PDF/Word/صورة وسألخصه أو أترجمه.\n"
-    "🎙️ <b>رسائل صوتية</b>: أرسل صوتاً وسأحوّله إلى نص وأجيبك.\n\n"
-    "🔑 <b>تسجيل الدخول</b>: لفتح المقررات والشيتات اكتب /login\n\n"
-    "─── أوامر الأدمن ───\n"
-    "أضف طالب <المعرف> <البريد> <الاسم>\n"
-    "مثال: أضف طالب 123456789 ali@uni.edu.sd علي أحمد\n\n"
-    "أضف دكتور <المعرف> <البريد> <الاسم>\n"
-    "مثال: أضف دكتور 987654321 omar@uni.edu.sd عمر محمد\n\n"
-    "احذف طالب <المعرف> | احذف دكتور <المعرف>\n"
-    "مثال: احذف طالب 123456789\n\n"
-    "عرض الطلاب | عرض الأساتذة | عرض الأدمن\n\n"
-    "اكتب سؤالك ببساطة أو أرسل ملفاً للبدء 🚀"
+    "🎓 بوت الخدمات الجامعية\n\n"
+    "أهلاً بك! أنا مساعدك الأكاديمي، أرسل سؤالك أو ملفك وسأجيبك فوراً.\n\n"
+    "الخدمات المتاحة:\n"
+    "• 💬 إجابة الاستفسارات الأكاديمية العامة.\n"
+    "• 📄 تلخيص وترجمة الملفات (PDF / Word / صور).\n"
+    "• 🎙️ تحويل المقاطع الصوتية إلى نص والإجابة عليها.\n"
+    "• 📚 عرض الشيتات والمقررات (أرسل /login للتسجيل).\n\n"
+    "⚙️ أدمن المحتوى؟ أرسل /admin للوحة التحكم."
 )
 
 
@@ -140,9 +132,7 @@ async def start(update, context):
     if student or instructor:
         await update.message.reply_text("أهلاً بك مجدداً. كيف أساعدك؟ اكتب /help لعرض الخدمات.")
         return
-    keyboard = [[InlineKeyboardButton("تسجيل الدخول", callback_data="btn_start_login"),
-                 InlineKeyboardButton("المتابعة كزائر", callback_data="btn_guest_mode")]]
-    await update.message.reply_text(HELP_TEXT, reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text(HELP_TEXT)
 
 
 async def help_command(update, context):
