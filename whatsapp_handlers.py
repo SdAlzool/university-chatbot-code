@@ -703,6 +703,7 @@ async def process_wa_message(phone, msg):
         mark_welcome_sent(phone)
         wa_help(phone)
         send_buttons(phone, "كيف تريد المتابعة؟", [("login", "تسجيل الدخول"), ("guest", "المتابعة كزائر")])
+        return
 
     msg_type = msg.get("type")
 
