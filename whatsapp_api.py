@@ -10,6 +10,7 @@ WA_MSG_URL = f"{WA_BASE}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
 WA_HEADERS = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
 
 _inbound_phone_id = None
+MAX_MEDIA_BYTES = 8 * 1024 * 1024
 
 
 def _base():
@@ -126,10 +127,22 @@ def download_media(media_id):
     if not info or not info.get("url"):
         return None, None
     try:
-        response = requests.get(info["url"], headers=WA_HEADERS, timeout=120)
+        response = requests.get(info["url"], headers=WA_HEADERS, timeout=120, stream=True)
         if response.status_code != 200:
             return None, info.get("mime_type")
-        return response.content, info.get("mime_type")
+        content_length = int(response.headers.get("Content-Length", 0) or 0)
+        if content_length > MAX_MEDIA_BYTES:
+            logging.warning("WhatsApp media rejected: %d bytes", content_length)
+            return None, info.get("mime_type")
+        chunks = []
+        total = 0
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            total += len(chunk)
+            if total > MAX_MEDIA_BYTES:
+                logging.warning("WhatsApp media exceeded size limit")
+                return None, info.get("mime_type")
+            chunks.append(chunk)
+        return b"".join(chunks), info.get("mime_type")
     except Exception:
         logging.exception("Media download error")
         return None, None

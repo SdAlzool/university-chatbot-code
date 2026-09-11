@@ -1,4 +1,5 @@
 import asyncio
+import re
 from firebase_admin import firestore
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
@@ -204,8 +205,8 @@ async def _edit_person(update: Update, context: ContextTypes.DEFAULT_TYPE, colle
         return
     person_id, field = context.args[:2]
     value = " ".join(context.args[2:]).strip()
-    if field in {"chat_id", "last_active"} or not field.replace("_", "").isalnum():
-        await update.effective_message.reply_text("لا يمكن تعديل هذا الحقل من لوحة الأدمن.")
+    if field not in {"name", "email"}:
+        await update.effective_message.reply_text("الحقول المسموحة للتعديل هي: name و email فقط.")
         return
     reference = db.collection(collection_name).document(person_id)
     exists = await asyncio.to_thread(lambda: reference.get().exists)
@@ -311,11 +312,27 @@ async def add_person_by_text(update: Update, collection_name: str, label: str, p
 async def edit_person_by_text(update: Update, collection_name: str, label: str, person_id: str, text: str):
     if not await require_admin(update):
         return
-    await update.effective_message.reply_text(
-        f"الصيغة: عدّل {label} <المعرف> <اسم الحقل> <القيمة>\n"
-        f"مثال: عدّل {label} {person_id} name الاسم الجديد\n"
-        f"الحقول المسموحة: name, email"
-    )
+    match = re.search(r"\b(name|email)\s*(?:=|:)\s*(.+)$", text, re.IGNORECASE)
+    if match:
+        field, value = match.group(1).lower(), match.group(2).strip()
+    else:
+        parts = text.split(maxsplit=3)
+        if len(parts) < 4 or parts[2].lower() not in {"name", "email"}:
+            await update.effective_message.reply_text(
+                f"الصيغة: عدّل {label} <المعرف> <name|email> <القيمة>\n"
+                f"مثال: عدّل {label} {person_id} name الاسم الجديد"
+            )
+            return
+        field, value = parts[2].lower(), parts[3].strip()
+    if not value:
+        await update.effective_message.reply_text("القيمة الجديدة لا يمكن أن تكون فارغة.")
+        return
+    reference = db.collection(collection_name).document(person_id)
+    if not await asyncio.to_thread(lambda: reference.get().exists):
+        await update.effective_message.reply_text(f"هذا {label} غير موجود.")
+        return
+    await asyncio.to_thread(reference.update, {field: value})
+    await update.effective_message.reply_text(f"تم تعديل {field} لـ {label} {person_id}.")
 
 
 async def delete_person_by_text(update: Update, collection_name: str, label: str, person_id: str):

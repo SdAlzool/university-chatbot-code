@@ -3,6 +3,7 @@ import asyncio
 import logging
 import secrets
 import time
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CallbackQueryHandler, CommandHandler, ConversationHandler, MessageHandler, filters
 from config import db
 from database import get_instructor_by_chat_id, get_student_by_chat_id
@@ -10,6 +11,8 @@ from utils import send_otp_email
 
 ASK_ID, ASK_OTP = range(2)
 _pending_otp = {}
+_last_otp_sent = {}
+OTP_RESEND_COOLDOWN_SECONDS = 60
 
 async def login_start(update, context):
     target = update.callback_query.message if update.callback_query else update.message
@@ -24,6 +27,10 @@ async def login_start(update, context):
 
 async def login_ask_id(update, context):
     user_id = update.message.text.strip()
+    chat_id = update.effective_chat.id
+    if time.time() - _last_otp_sent.get(chat_id, 0) < OTP_RESEND_COOLDOWN_SECONDS:
+        await update.message.reply_text("انتظر دقيقة قبل طلب رمز جديد.")
+        return ConversationHandler.END
     for collection, role in (("students", "student"), ("instructors", "instructor")):
         document = await asyncio.to_thread(db.collection(collection).document(user_id).get)
         if document.exists:
@@ -47,7 +54,8 @@ async def login_ask_id(update, context):
             f"الخطأ: {str(e)[:200]}"
         )
         return ConversationHandler.END
-    _pending_otp[update.effective_chat.id] = {"code": code, "user_id": user_id, "role": role, "expires": time.time() + 300}
+    _last_otp_sent[chat_id] = time.time()
+    _pending_otp[chat_id] = {"code": code, "user_id": user_id, "role": role, "expires": time.time() + 300, "attempts": 0}
     await update.message.reply_text("تم إرسال رمز التحقق إلى بريدك الإلكتروني. اكتبه هنا خلال 5 دقائق:")
     return ASK_OTP
 
@@ -59,23 +67,126 @@ async def login_ask_otp(update, context):
         await update.message.reply_text("انتهت جلسة التحقق. ابدأ بـ /login.")
         return ConversationHandler.END
     if update.message.text.strip() != pending["code"]:
+        pending["attempts"] = pending.get("attempts", 0) + 1
+        if pending["attempts"] >= 5:
+            _pending_otp.pop(chat_id, None)
+            await update.message.reply_text("تم إلغاء التحقق بعد محاولات كثيرة. ابدأ بـ /login.")
+            return ConversationHandler.END
         await update.message.reply_text("الرمز غير صحيح، حاول مرة أخرى:")
         return ASK_OTP
     collection = "students" if pending["role"] == "student" else "instructors"
     await asyncio.to_thread(db.collection(collection).document(pending["user_id"]).update, {"chat_id": str(chat_id), "last_active": time.time()})
     _pending_otp.pop(chat_id, None)
-    await update.message.reply_text("تم تسجيل الدخول بنجاح ✅")
+    
+    # Show appropriate menu based on role
+    if pending["role"] == "student":
+        await _show_student_welcome(update.message)
+    else:
+        await _show_instructor_welcome(update.message)
+    
     return ConversationHandler.END
 
-async def logout(update, context):
-    chat_id = update.effective_chat.id
-    for collection, finder in (("students", get_student_by_chat_id), ("instructors", get_instructor_by_chat_id)):
-        user_id, user = await asyncio.to_thread(finder, chat_id)
-        if user:
-            await asyncio.to_thread(db.collection(collection).document(user_id).update, {"chat_id": None, "last_active": None})
-            await update.message.reply_text("تم تسجيل الخروج بنجاح 👋")
+
+async def _show_student_welcome(message):
+    """Show welcome menu for students after login."""
+    buttons = [
+        [InlineKeyboardButton("❓ سؤال عن الجامعة", callback_data="student:university")],
+        [InlineKeyboardButton("📚 سؤال عن مادة", callback_data="student:course_question")],
+        [InlineKeyboardButton("📖 موادّي", callback_data="student:mycourses")],
+    ]
+    await message.reply_text(
+        "✅ تم تسجيل الدخول بنجاح!\n\n"
+        "اختر ما تريد:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+async def _show_instructor_welcome(message):
+    """Show welcome menu for instructors after login."""
+    buttons = [
+        [InlineKeyboardButton("📚 عرض المواد", callback_data="instructor:view_courses")],
+        [InlineKeyboardButton("➕ إضافة مادة", callback_data="instructor:add_course")],
+        [InlineKeyboardButton("🗑️ حذف مادة", callback_data="instructor:delete_course")],
+    ]
+    await message.reply_text(
+        "✅ تم تسجيل الدخول بنجاح!\n\n"
+        "مرحباً بك أستاذي! اختر ما تريد:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+async def handle_student_callback(update, context):
+    """Handle student menu callbacks."""
+    query = update.callback_query
+    await query.answer()
+    
+    action = query.data.removeprefix("student:")
+    
+    if action == "university":
+        await query.message.reply_text("اكتب سؤالك عن الجامعة:")
+        context.user_data["question_type"] = "university"
+    elif action == "course_question":
+        # Show courses list
+        from handlers.courses import _available_courses_for_user
+        courses, _ = await _available_courses_for_user(update)
+        if not courses:
+            await query.message.reply_text("لا توجد مواد مخصصة لك.")
             return
-    await update.message.reply_text("أنت غير مسجل دخول.")
+        buttons = [[InlineKeyboardButton(c.get("name", "مادة"), callback_data=f"askcourse:{c.get('folder', '')}")] for c in courses]
+        await query.message.reply_text(
+            "اختر المادة لسؤالك:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    elif action == "mycourses":
+        from handlers.courses import show_my_courses
+        await show_my_courses(update, context)
+
+
+async def handle_ask_course(update, context):
+    """Handle when student selects a course to ask about."""
+    query = update.callback_query
+    await query.answer()
+    folder = query.data.removeprefix("askcourse:")
+    
+    context.user_data["question_type"] = "course"
+    context.user_data["question_course"] = folder
+    
+    await query.message.reply_text(f"اكتب سؤالك عن هذه المادة:")
+
+
+async def handle_instructor_callback(update, context):
+    """Handle instructor menu callbacks."""
+    query = update.callback_query
+    await query.answer()
+    
+    action = query.data.removeprefix("instructor:")
+    
+    if action == "view_courses":
+        from handlers.courses import _all_courses
+        courses = await _all_courses()
+        if not courses:
+            await query.message.reply_text("لا توجد مواد مسجلة.")
+            return
+        lines = ["📚 **المواد المتاحة:**\n"]
+        for c in courses:
+            lines.append(f"• {c.get('name', 'مادة')}")
+        await query.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    elif action == "add_course":
+        await query.message.reply_text("اكتب اسم المادة الجديدة:")
+        context.user_data["instructor_action"] = "add_course"
+    elif action == "delete_course":
+        # Show courses to delete
+        from handlers.courses import _all_courses
+        courses = await _all_courses()
+        if not courses:
+            await query.message.reply_text("لا توجد مواد لحذفها.")
+            return
+        buttons = [[InlineKeyboardButton(c.get("name", "مادة"), callback_data=f"delcourse:{c.get('folder', '')}")] for c in courses]
+        await query.message.reply_text(
+            "اختر المادة لحذفها:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
 
 async def login_cancel(update, context):
     _pending_otp.pop(update.effective_chat.id, None)

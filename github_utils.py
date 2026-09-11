@@ -1,6 +1,7 @@
 import os
 import base64
 import requests
+from pathlib import PurePosixPath
 from config import GITHUB_TOKEN, GITHUB_REPO
 
 def github_headers():
@@ -34,7 +35,7 @@ def list_course_files_with_sha(course_folder):
     if not course_folder or not course_folder.strip():
         return None
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{course_folder.strip()}"
-    response = requests.get(url, headers=github_headers())
+    response = requests.get(url, headers=github_headers(), timeout=20)
     if response.status_code != 200:
         return None
     entries = response.json()
@@ -48,7 +49,7 @@ def list_course_files_with_sha(course_folder):
             files.append({"name": entry["name"], "sha": entry["sha"], "path": entry["path"]})
         elif entry.get("type") == "dir":
             sub_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{entry['path']}"
-            sub_response = requests.get(sub_url, headers=github_headers())
+            sub_response = requests.get(sub_url, headers=github_headers(), timeout=20)
             if sub_response.status_code != 200:
                 continue
             sub_entries = sub_response.json()
@@ -61,14 +62,14 @@ def list_course_files_with_sha(course_folder):
 
 def get_file_download_url_by_path(file_path):
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{file_path}"
-    response = requests.get(url, headers=github_headers())
+    response = requests.get(url, headers=github_headers(), timeout=20)
     if response.status_code != 200:
         return None
     return response.json().get("download_url")
 
 def get_file_sha_by_path(file_path):
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{file_path}"
-    response = requests.get(url, headers=github_headers())
+    response = requests.get(url, headers=github_headers(), timeout=20)
     if response.status_code != 200:
         return None
     data = response.json()
@@ -86,19 +87,19 @@ def download_file_bytes(file_path):
     return response.content
 
 def github_upload_file(course_folder, file_name, content_bytes, commit_message):
-    subfolder = slugify_file_stem(file_name)
-    file_path = f"{course_folder}/{subfolder}/{file_name}"
+    safe_name = PurePosixPath(file_name.replace("\\", "/")).name
+    file_path = f"{slugify_course_name(course_folder)}/{safe_name}"
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{file_path}"
     b64_content = base64.b64encode(content_bytes).decode()
     payload = {"message": commit_message, "content": b64_content}
     existing_sha = get_file_sha_by_path(file_path)
     if existing_sha:
         payload["sha"] = existing_sha
-    response = requests.put(url, headers=github_headers(), json=payload)
+    response = requests.put(url, headers=github_headers(), json=payload, timeout=60)
     return response.status_code in (200, 201)
 
 def github_delete_file(file_path, sha, commit_message):
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{file_path}"
     payload = {"message": commit_message, "sha": sha}
-    response = requests.delete(url, headers=github_headers(), json=payload)
+    response = requests.delete(url, headers=github_headers(), json=payload, timeout=60)
     return response.status_code == 200

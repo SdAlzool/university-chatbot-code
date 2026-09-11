@@ -265,6 +265,9 @@ async def handle_delmenu_button(update, context):
 async def handle_delcourse_button(update, context):
     query = update.callback_query
     await query.answer()
+    if not await user_is_admin(update):
+        await query.message.reply_text("ليس لديك صلاحية حذف المحتوى.")
+        return
     folder = query.data.removeprefix("delcourse:")
     files = await asyncio.to_thread(list_course_files_with_sha, folder) or []
     if not files:
@@ -283,6 +286,9 @@ async def handle_delcourse_button(update, context):
 async def handle_delfile_button(update, context):
     query = update.callback_query
     await query.answer()
+    if not await user_is_admin(update):
+        await query.message.reply_text("ليس لديك صلاحية حذف المحتوى.")
+        return
     files = context.user_data.get("del_files", [])
     try:
         file = files[int(query.data.removeprefix("delfile:"))]
@@ -305,6 +311,9 @@ async def handle_delfile_button(update, context):
 async def handle_delwhole_select(update, context):
     query = update.callback_query
     await query.answer()
+    if not await user_is_admin(update):
+        await query.message.reply_text("ليس لديك صلاحية حذف المحتوى.")
+        return
     folder = query.data.removeprefix("delwhole:")
     context.user_data["del_whole_folder"] = folder
     keyboard = [
@@ -320,6 +329,9 @@ async def handle_delwhole_select(update, context):
 async def handle_delwhole_confirm(update, context):
     query = update.callback_query
     await query.answer()
+    if not await user_is_admin(update):
+        await query.message.reply_text("ليس لديك صلاحية حذف المحتوى.")
+        return
     choice = query.data.removeprefix("delwholeconfirm:")
     folder = context.user_data.get("del_whole_folder")
     context.user_data.pop("del_whole_folder", None)

@@ -84,7 +84,7 @@ def _confirm_delete_kb(section, person_id):
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Entry point: /admin — show dashboard with stats."""
-    if not user_is_admin(update):
+    if not await user_is_admin(update):
         await update.message.reply_text("⛔ ليس لديك صلاحية الوصول لهذه اللوحة.")
         return
 
@@ -113,7 +113,7 @@ async def _admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if not user_is_admin(update):
+    if not await user_is_admin(update):
         await query.edit_message_text("⛔ ليس لديك صلاحية.")
         return
 
@@ -164,6 +164,23 @@ async def _admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ap:view:<section>:<id>  →  view person details
     if len(parts) == 4 and parts[1] == "view":
         await _handle_view_person(query, parts[2], parts[3])
+        return
+
+    if len(parts) == 4 and parts[1] == "editperson":
+        await query.edit_message_text(
+            f"أرسل الآن: عدّل {parts[2]} {parts[3]} name القيمة الجديدة\n"
+            "أو استخدم email بدل name."
+        )
+        return
+
+    # ap:assigncourse:<student_id>  →  show courses to assign
+    if len(parts) == 3 and parts[1] == "assigncourse":
+        await _handle_assign_course(query, parts[2])
+        return
+
+    # ap:togglecourse:<student_id>:<course_folder>  →  toggle course assignment
+    if len(parts) == 4 and parts[1] == "togglecourse":
+        await _handle_toggle_course(query, parts[2], parts[3])
         return
 
 
@@ -219,9 +236,16 @@ async def _handle_list(query, section):
         lines.append(f"{icon} `{doc.id}` — {name}")
 
     text = "\n".join(lines)
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 رجوع", callback_data=f"ap:sec:{section}")],
-    ])
+    buttons = []
+    for doc in docs[:30]:
+        buttons.append([
+            InlineKeyboardButton(
+                f"👁️ تفاصيل {doc.to_dict().get('name', doc.id)}",
+                callback_data=f"ap:view:{section}:{doc.id}",
+            )
+        ])
+    buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"ap:sec:{section}")])
+    kb = InlineKeyboardMarkup(buttons)
     await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
 
 
@@ -395,13 +419,87 @@ async def _handle_view_person(query, section, person_id):
     for k, v in data.items():
         lines.append(f"• **{k}**: `{v}`")
 
-    kb = InlineKeyboardMarkup([
+    buttons = [
         [
+            InlineKeyboardButton("✏️ تعديل بالرسالة", callback_data=f"ap:editperson:{section}:{person_id}"),
             InlineKeyboardButton("🗑️ حذف", callback_data=f"ap:confirm_del:{section}:{person_id}"),
-            InlineKeyboardButton("🔙 رجوع", callback_data=f"ap:sec:{section}"),
         ],
-    ])
+    ]
+    
+    if section == "students":
+        buttons.append([
+            InlineKeyboardButton("📚 تعيين مواد", callback_data=f"ap:assigncourse:{person_id}"),
+        ])
+    
+    buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"ap:sec:{section}")])
+    
+    kb = InlineKeyboardMarkup(buttons)
     await query.edit_message_text("\n".join(lines), reply_markup=kb, parse_mode="Markdown")
+
+
+async def _handle_assign_course(query, student_id):
+    """Show courses to assign to a student."""
+    # Get all available courses
+    docs = list(db.collection("courses").stream())
+    courses = [doc.to_dict() for doc in docs]
+    
+    if not courses:
+        await query.edit_message_text(
+            "❌ لا توجد مواد متاحة. أضف مواد أولاً.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"ap:view:students:{student_id}")]]),
+        )
+        return
+    
+    # Get student's current courses
+    student_doc = db.collection("students").document(student_id).get()
+    student_data = student_doc.to_dict() if student_doc.exists else {}
+    assigned_courses = student_data.get("courses") or []
+    
+    lines = [f"📚 **مواد الطالب {student_id}**\n"]
+    lines.append(f"المواد الحالية: {', '.join(assigned_courses) if assigned_courses else 'لا توجد مواد'}\n")
+    lines.append("اختر المادة لتعيينها أو إزالتها:")
+    
+    buttons = []
+    for course in courses[:20]:
+        folder = course.get("folder", "")
+        name = course.get("name", folder)
+        # Mark assigned courses with ✅
+        status = "✅" if folder in assigned_courses else "⬜"
+        buttons.append([
+            InlineKeyboardButton(
+                f"{status} {name}",
+                callback_data=f"ap:togglecourse:{student_id}:{folder}",
+            )
+        ])
+    
+    buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"ap:view:students:{student_id}")])
+    
+    kb = InlineKeyboardMarkup(buttons)
+    await query.edit_message_text("\n".join(lines), reply_markup=kb, parse_mode="Markdown")
+
+
+async def _handle_toggle_course(query, student_id, course_folder):
+    """Toggle a course assignment for a student."""
+    from firebase_admin import firestore
+    
+    # Get student's current courses
+    student_doc = db.collection("students").document(student_id).get()
+    student_data = student_doc.to_dict() if student_doc.exists else {}
+    assigned_courses = student_data.get("courses") or []
+    
+    if course_folder in assigned_courses:
+        # Remove course
+        db.collection("students").document(student_id).update({
+            "courses": firestore.ArrayRemove([course_folder])
+        })
+    else:
+        # Add course
+        db.collection("students").document(student_id).update({
+            "courses": firestore.ArrayUnion([course_folder])
+        })
+    
+    # Refresh the course list
+    await _handle_assign_course(query, student_id)
 
 
 # ============================================================
@@ -413,7 +511,7 @@ async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     Handle text messages from admins when in 'add' or 'edit' mode.
     This is registered as a MessageHandler in main.py.
     """
-    if not user_is_admin(update):
+    if not await user_is_admin(update):
         return False  # not handled
 
     text = update.message.text.strip()

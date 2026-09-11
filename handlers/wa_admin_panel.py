@@ -3,7 +3,7 @@
 import logging
 from whatsapp_api import send_text, send_list, send_buttons
 from whatsapp_state import get_state, reset_state
-from config import db
+from config import ADMIN_WHATSAPP_NUMBERS, db
 from handlers.admin import is_stored_admin
 
 
@@ -323,6 +323,9 @@ def wa_admin_callback(phone, payload):
     """
     if not payload.startswith("waadm:"):
         return False
+    if phone not in ADMIN_WHATSAPP_NUMBERS and not is_stored_admin(phone):
+        logging.warning("Unauthorized WhatsApp admin callback from %s", phone)
+        return True
 
     parts = payload.split(":")
     action = parts[1] if len(parts) > 1 else ""

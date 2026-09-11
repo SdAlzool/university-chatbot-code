@@ -156,12 +156,23 @@ async def handle_welcome_buttons(update, context):
 
 async def handle_message(update, context):
     from .auth import logout
-    from .courses import get_sheet, show_courses, summarize_last_file
+    from .courses import get_sheet, show_courses, summarize_last_file, show_my_courses
     t0 = time.time()
     text = update.message.text.strip()
     chat_id = update.effective_chat.id
+    if text.casefold() in {"adminpanel", "لوحة الادمن", "لوحة الأدمن"}:
+        if not await user_is_admin(update):
+            await update.message.reply_text("ليس لديك صلاحية الوصول لهذه اللوحة.")
+            return
+        from .admin_panel import admin_panel
+        await admin_panel(update, context)
+        return
     if text.lower() in ("مساعدة", "help", "المساعدة", "الخدمات", "menu", "قائمة"):
         await update.message.reply_text(HELP_TEXT)
+        return
+    # My courses command
+    if text.strip() in ("موادّي", "موادي", "my courses", "mycourses"):
+        await show_my_courses(update, context)
         return
     lang_cmd = parse_language_toggle(text)
     if lang_cmd:

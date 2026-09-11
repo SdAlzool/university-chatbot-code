@@ -386,7 +386,7 @@ def fallback_kb_answer(question, language="ar"):
                 idf = math.log((n + 1) / (df[t] + 1)) + 1.0
                 score += idf * 2.5 if t in topic_ws else idf
         if score > best_score:
-            best_score, best = score, best
+            best_score, best = score, p
     if not best or best_score <= 0:
         return _NO_INFO_REPLY_EN if language == "en" else _NO_INFO_REPLY
     matched = [t for t in tokens if t in _word_set(best)]

@@ -1,6 +1,8 @@
 """WhatsApp bot — HTTP server, webhook, and main entry point."""
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -10,7 +12,10 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
-from config import WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_VERIFY_TOKEN, WHATSAPP_API_VERSION, WHATSAPP_PORT
+from config import (
+    WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_VERIFY_TOKEN,
+    WHATSAPP_APP_SECRET, WHATSAPP_API_VERSION, WHATSAPP_PORT,
+)
 from whatsapp_api import set_inbound_phone_id
 from whatsapp_handlers import process_wa_message
 
@@ -21,8 +26,10 @@ def _handle_webhook_payload(payload):
             for change in entry.get("changes", []):
                 value = change.get("value") or {}
                 metadata = value.get("metadata") or {}
-                if metadata.get("phone_number_id"):
-                    set_inbound_phone_id(metadata["phone_number_id"])
+                inbound_phone_id = metadata.get("phone_number_id")
+                if inbound_phone_id and inbound_phone_id != WHATSAPP_PHONE_NUMBER_ID:
+                    logging.warning("Ignoring webhook for unexpected phone_number_id=%s", inbound_phone_id)
+                    continue
                 for msg in value.get("messages", []):
                     phone = msg.get("from")
                     if not phone:
@@ -40,6 +47,9 @@ def _handle_webhook_payload(payload):
 
 
 class WAHandler(BaseHTTPRequestHandler):
+    webhook_path = os.environ.get("WHATSAPP_WEBHOOK_PATH", "/webhook")
+    max_body_size = 1_048_576
+
     def log_message(self, format, *args):
         logging.info("WA HTTP: %s", format % args)
 
@@ -68,13 +78,13 @@ class WAHandler(BaseHTTPRequestHandler):
                 mode = query.get("hub.mode", [""])[0]
                 token = query.get("hub.verify_token", [""])[0]
                 challenge = query.get("hub.challenge", [""])[0]
-                logging.info("WA VERIFY: mode=%s token=%s challenge_len=%d", mode, token[:10] if token else "", len(challenge))
+                logging.info("WA VERIFY: mode=%s challenge_len=%d", mode, len(challenge))
                 if mode == "subscribe" and token == WHATSAPP_VERIFY_TOKEN:
                     logging.info("WA webhook verified OK! Sending challenge back.")
                     self._send(200, challenge)
                     return
                 if mode or token or challenge:
-                    logging.warning("WA verification mismatch: got token=%s expected=%s", token, WHATSAPP_VERIFY_TOKEN[:10] if WHATSAPP_VERIFY_TOKEN else "")
+                    logging.warning("WA verification mismatch")
                     self._send(403, "Forbidden")
                     return
 
@@ -90,13 +100,32 @@ class WAHandler(BaseHTTPRequestHandler):
                 pass
 
     def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path != self.webhook_path:
+            self._send(404, "Not Found")
+            return
+
         try:
             length = int(self.headers.get("Content-Length", 0))
+            if length <= 0 or length > self.max_body_size:
+                self._send(413, "Payload Too Large")
+                return
             raw_body = self.rfile.read(length)
-            payload = json.loads(raw_body or b"{}")
+            signature = self.headers.get("X-Hub-Signature-256", "")
+            if not WHATSAPP_APP_SECRET:
+                self._send(503, "Webhook Not Configured")
+                return
+            expected = "sha256=" + hmac.new(
+                WHATSAPP_APP_SECRET.encode(), raw_body, hashlib.sha256
+            ).hexdigest()
+            if not hmac.compare_digest(signature, expected):
+                self._send(403, "Forbidden")
+                return
+            payload = json.loads(raw_body)
         except Exception:
-            logging.exception("Invalid webhook payload")
-            payload = {}
+            logging.warning("Invalid webhook payload")
+            self._send(400, "Bad Request")
+            return
         logging.info("WA POST %s (entry=%d)", self.path, len(payload.get("entry", [])))
         self._send(200, "OK")
         threading.Thread(target=_handle_webhook_payload, args=(payload,), daemon=True).start()
@@ -118,13 +147,14 @@ def main():
         ("WHATSAPP_TOKEN", WHATSAPP_TOKEN),
         ("WHATSAPP_PHONE_NUMBER_ID", WHATSAPP_PHONE_NUMBER_ID),
         ("WHATSAPP_VERIFY_TOKEN", WHATSAPP_VERIFY_TOKEN),
+        ("WHATSAPP_APP_SECRET", WHATSAPP_APP_SECRET),
     ) if not value]
     if missing:
         logging.error("ناقص في Environment Variables: %s", ", ".join(missing))
         return
 
-    logging.info("WA Config: PHONE_ID=%s VERIFY_TOKEN=%s API_VERSION=%s",
-                 WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_VERIFY_TOKEN, WHATSAPP_API_VERSION)
+    logging.info("WA Config: PHONE_ID=%s API_VERSION=%s",
+                 WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_API_VERSION)
 
     port = int(os.environ.get("PORT", os.environ.get("WHATSAPP_PORT", str(WHATSAPP_PORT or 8445))))
 
@@ -135,10 +165,11 @@ def main():
     try:
         server = ThreadingHTTPServer(("0.0.0.0", port), WAHandler)
         logging.info("WhatsApp webhook started on 0.0.0.0:%s", port)
-        logging.info("ENV CHECK: WHATSAPP_TOKEN=%s PHONE_ID=%s VERIFY_TOKEN=%s API_VERSION=%s",
+        logging.info("ENV CHECK: WHATSAPP_TOKEN=%s PHONE_ID=%s VERIFY_TOKEN=%s APP_SECRET=%s API_VERSION=%s",
                      "SET" if WHATSAPP_TOKEN else "MISSING",
                      "SET" if WHATSAPP_PHONE_NUMBER_ID else "MISSING",
                      "SET" if WHATSAPP_VERIFY_TOKEN else "MISSING",
+                 "SET" if WHATSAPP_APP_SECRET else "MISSING",
                      WHATSAPP_API_VERSION or "MISSING")
         if os.environ.get("RENDER"):
             logging.info("Running on Render.")

@@ -19,7 +19,7 @@ from gemini_services import (
     call_gemini_with_retry, detect_user_intent,
     generate_answer, parse_language_toggle, get_effective_language,
 )
-from github_utils import list_course_files_with_sha, github_upload_file, github_delete_file, slugify_course_name
+from github_utils import download_file_bytes, list_course_files_with_sha, github_upload_file, github_delete_file, slugify_course_name
 from utils import send_otp_email, extract_pdf_text
 from handlers.admin import is_stored_admin
 from handlers.courses import _all_courses
@@ -113,6 +113,10 @@ def start_login(phone):
 
 async def handle_login_id(phone, user_id):
     user_id = user_id.strip()
+    state = get_state(phone)
+    if time.time() - state.get("otp_sent_at", 0) < 60:
+        send_text(phone, "انتظر دقيقة قبل طلب رمز جديد.")
+        return
     for collection, role in (("students", "student"), ("instructors", "instructor")):
         doc = await asyncio.to_thread(db.collection(collection).document(user_id).get)
         if doc.exists:
@@ -138,7 +142,8 @@ async def handle_login_id(phone, user_id):
         return
 
     state = get_state(phone)
-    state["data"] = {"code": code, "user_id": user_id, "role": role, "expires": time.time() + 300}
+    state["otp_sent_at"] = time.time()
+    state["data"] = {"code": code, "user_id": user_id, "role": role, "expires": time.time() + 300, "attempts": 0}
     state["state"] = "LOGIN_ASK_OTP"
     send_text(phone, "تم إرسال رمز التحقق إلى بريدك الإلكتروني. اكتبه هنا خلال 5 دقائق:")
 
@@ -151,6 +156,11 @@ async def handle_login_otp(phone, otp):
         reset_state(phone)
         return
     if otp.strip() != pending.get("code"):
+        pending["attempts"] = pending.get("attempts", 0) + 1
+        if pending["attempts"] >= 5:
+            reset_state(phone)
+            send_text(phone, "تم إلغاء التحقق بعد محاولات كثيرة. ابدأ من جديد.")
+            return
         send_text(phone, "الرمز غير صحيح، حاول مرة أخرى:")
         return
     collection = "students" if pending["role"] == "student" else "instructors"
@@ -187,6 +197,37 @@ async def wa_show_courses(phone):
     send_text(phone, "\n".join(lines))
 
 
+async def wa_show_my_courses(phone):
+    """Show only the student's assigned courses."""
+    student_id, student = await asyncio.to_thread(get_student_by_chat_id, "wa:" + phone)
+    if not student:
+        send_text(phone, "غير مسجل دخول. استخدم أمر /login.")
+        return
+    
+    assigned_courses = student.get("courses") or []
+    if not assigned_courses:
+        # Fallback to all courses if none assigned
+        courses = await _all_courses()
+    else:
+        all_courses = await _all_courses()
+        courses = [c for c in all_courses if c.get("folder") in assigned_courses]
+    
+    if not courses:
+        send_text(phone, "لا توجد مواد مخصصة لك.")
+        return
+    
+    state = get_state(phone)
+    state["my_courses"] = courses
+    
+    items = []
+    for c in courses:
+        name = c.get("name", "مادة")
+        folder = c.get("folder", "")
+        items.append((f"mycourse:{folder}", name[:24], folder[:72]))
+    
+    send_list(phone, "📚 موادّي:\nاختر المادة لعرض التفاصيل:", items, header="المواد")
+
+
 async def wa_sheets_for(phone, folder):
     files = await asyncio.to_thread(list_course_files_with_sha, folder) or []
     if not files:
@@ -199,6 +240,70 @@ async def wa_sheets_for(phone, folder):
         await asyncio.to_thread(send_file_from_github, phone, files[0])
         return
     items = [(f"file:{i}", f["name"][:24], f["name"][:72]) for i, f in enumerate(files[:100])]
+    send_list(phone, "اختر الملف:", items, header="الملفات")
+
+
+async def wa_my_course_selected(phone, folder):
+    """Handle when student selects a course from my courses."""
+    state = get_state(phone)
+    state["selected_course"] = folder
+    
+    # Get course name
+    courses = await _all_courses()
+    course_name = "المادة"
+    for c in courses:
+        if c.get("folder") == folder:
+            course_name = c.get("name", "المادة")
+            break
+    
+    buttons = [
+        ("courseopt:syllabus:" + folder, "📋 المقرر"),
+        ("courseopt:refs:" + folder, "📖 المراجع"),
+        ("courseopt:exams:" + folder, "📝 الامتحانات"),
+        ("sheet:" + folder, "📄 الشيتات"),
+    ]
+    
+    send_buttons(phone, f"📚 {course_name}\n\nاختر:", buttons)
+
+
+async def wa_course_option(phone, action):
+    """Handle course options (syllabus, refs, exams)."""
+    parts = action.split(":", 1)
+    if len(parts) != 2:
+        return
+    
+    option, folder = parts
+    
+    # Get files from GitHub
+    files = await asyncio.to_thread(list_course_files_with_sha, folder) or []
+    if not files:
+        send_text(phone, "لا توجد ملفات لهذه المادة.")
+        return
+    
+    # Filter files based on option
+    filtered_files = []
+    for f in files:
+        name_lower = f["name"].lower()
+        if option == "syllabus" and any(kw in name_lower for kw in ["مقرر", "syllabus", "curriculum"]):
+            filtered_files.append(f)
+        elif option == "refs" and any(kw in name_lower for kw in ["مرجع", "ref", "reference", "book"]):
+            filtered_files.append(f)
+        elif option == "exams" and any(kw in name_lower for kw in ["امتحان", "exam", "quiz", "final", "midterm"]):
+            filtered_files.append(f)
+    
+    if not filtered_files:
+        # If no specific files found, show all files
+        filtered_files = files
+    
+    state = get_state(phone)
+    state["pending_files"] = filtered_files
+    
+    if len(filtered_files) == 1:
+        state["last_file"] = filtered_files[0]
+        await asyncio.to_thread(send_file_from_github, phone, filtered_files[0])
+        return
+    
+    items = [(f"file:{i}", f["name"][:24], f["name"][:72]) for i, f in enumerate(filtered_files[:100])]
     send_list(phone, "اختر الملف:", items, header="الملفات")
 
 
@@ -240,6 +345,14 @@ async def _wa_available_courses(phone):
     instructor_id, instructor = await asyncio.to_thread(get_instructor_by_chat_id, "wa:" + phone)
     if instructor_id:
         return instructor.get("courses") or []
+    # Check if student
+    student_id, student = await asyncio.to_thread(get_student_by_chat_id, "wa:" + phone)
+    if student:
+        assigned_courses = student.get("courses") or []
+        if not assigned_courses:
+            return await _all_courses()
+        all_courses = await _all_courses()
+        return [c for c in all_courses if c.get("folder") in assigned_courses]
     if wa_is_admin(phone):
         return await _all_courses()
     return []
@@ -533,6 +646,12 @@ async def handle_callback(phone, payload):
     if payload.startswith("sheet:"):
         await wa_sheets_for(phone, payload.removeprefix("sheet:"))
         return
+    if payload.startswith("mycourse:"):
+        await wa_my_course_selected(phone, payload.removeprefix("mycourse:"))
+        return
+    if payload.startswith("courseopt:"):
+        await wa_course_option(phone, payload.removeprefix("courseopt:"))
+        return
     if payload.startswith("file:"):
         state = get_state(phone)
         try:
@@ -591,6 +710,11 @@ async def route_text(phone, text):
 
     if text.strip().lower() in ("قائمة", "menu", "مساعدة", "help", "الخدمات"):
         wa_show_main_menu(phone)
+        return
+    
+    # My courses command
+    if text.strip() in ("موادّي", "موادي", "my courses", "mycourses"):
+        await wa_show_my_courses(phone)
         return
 
     # Admin panel text commands

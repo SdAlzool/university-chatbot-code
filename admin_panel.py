@@ -84,7 +84,7 @@ def _confirm_delete_kb(section, person_id):
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Entry point: /admin — show dashboard with stats."""
-    if not user_is_admin(update):
+    if not await user_is_admin(update):
         await update.message.reply_text("⛔ ليس لديك صلاحية الوصول لهذه اللوحة.")
         return
 
@@ -113,7 +113,7 @@ async def _admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if not user_is_admin(update):
+    if not await user_is_admin(update):
         await query.edit_message_text("⛔ ليس لديك صلاحية.")
         return
 
@@ -413,7 +413,7 @@ async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     Handle text messages from admins when in 'add' or 'edit' mode.
     This is registered as a MessageHandler in main.py.
     """
-    if not user_is_admin(update):
+    if not await user_is_admin(update):
         return False  # not handled
 
     text = update.message.text.strip()

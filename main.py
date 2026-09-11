@@ -10,11 +10,12 @@ from handlers.admin import (
     delete_student, delete_instructor, handle_person_button, handle_person_delete,
 )
 from handlers.auth import (
-    login_conv, logout
+    login_conv, logout, handle_student_callback, handle_instructor_callback, handle_ask_course
 )
 from handlers.courses import (
     show_courses, get_sheet, summarize_last_file,
-    handle_sheet_button, handle_file_button
+    handle_sheet_button, handle_file_button,
+    show_my_courses, handle_my_course_button, handle_course_option, handle_back_my_courses
 )
 from handlers.content_mgmt import (
     addcontent_conv, deletecontent_start, handle_delmenu_button,
@@ -44,6 +45,7 @@ def main():
     
     # Courses & Sheets
     app.add_handler(CommandHandler("courses", show_courses))
+    app.add_handler(CommandHandler("mycourses", show_my_courses))
     app.add_handler(CommandHandler("sheets", get_sheet))
     app.add_handler(CommandHandler("summarize", summarize_last_file))
     app.add_handler(CommandHandler("deletecontent", deletecontent_start))
@@ -69,8 +71,14 @@ def main():
     # Callback Queries
     app.add_handler(CallbackQueryHandler(handle_welcome_buttons, pattern="^btn_guest_mode$"))
     app.add_handler(CallbackQueryHandler(_admin_callback, pattern=r"^ap:"))
+    app.add_handler(CallbackQueryHandler(handle_student_callback, pattern="^student:"))
+    app.add_handler(CallbackQueryHandler(handle_instructor_callback, pattern="^instructor:"))
+    app.add_handler(CallbackQueryHandler(handle_ask_course, pattern="^askcourse:"))
     app.add_handler(CallbackQueryHandler(handle_sheet_button, pattern="^sheet:"))
     app.add_handler(CallbackQueryHandler(handle_file_button, pattern="^filesel:"))
+    app.add_handler(CallbackQueryHandler(handle_my_course_button, pattern="^mycourse:"))
+    app.add_handler(CallbackQueryHandler(handle_course_option, pattern="^courseopt:"))
+    app.add_handler(CallbackQueryHandler(handle_back_my_courses, pattern="^backmycourses$"))
     app.add_handler(CallbackQueryHandler(handle_delmenu_button, pattern="^delmenu:"))
     app.add_handler(CallbackQueryHandler(handle_delwhole_select, pattern="^delwhole:"))
     app.add_handler(CallbackQueryHandler(handle_delwhole_confirm, pattern="^delwholeconfirm:"))
@@ -78,7 +86,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_delfile_button, pattern="^delfile:"))
     app.add_handler(CallbackQueryHandler(handle_person_button, pattern="^person:"))
     app.add_handler(CallbackQueryHandler(handle_person_delete, pattern="^persondel:"))
-    app.add_handler(CallbackQueryHandler(handle_file_action, pattern="^fileact:"))
+    app.add_handler(CallbackQueryHandler(handle_file_action, pattern="^fileaction:"))
 
     # Messages
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
