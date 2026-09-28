@@ -96,8 +96,17 @@ def main():
 
     print("البوت يعمل بنجاح مع ربط المواد التلقائي للطلاب...")
     
-    # Note: Webhook conflict resolved by deleting webhook from Telegram Bot API directly
-    # Do NOT use asyncio.run() here as it closes the event loop needed by run_polling()
+    # Delete webhook via direct HTTP request to avoid event loop conflict
+    import requests
+    try:
+        response = requests.get(
+            f"https://api.telegram.org/bot{TOKEN}/deleteWebhook",
+            params={"drop_pending_updates": "true"},
+            timeout=10
+        )
+        print(f"Webhook deleted: {response.status_code}")
+    except Exception as e:
+        print(f"Webhook deletion failed: {e}")
     
     app.run_polling(timeout=30)
 
