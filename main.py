@@ -95,6 +95,11 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("البوت يعمل بنجاح مع ربط المواد التلقائي للطلاب...")
+    
+    # Delete any existing webhook to avoid conflict with polling
+    import asyncio
+    asyncio.get_event_loop().run_until_complete(app.bot.delete_webhook(drop_pending_updates=True))
+    
     app.run_polling(timeout=30)
 
 if __name__ == "__main__":
