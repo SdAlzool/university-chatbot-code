@@ -10,7 +10,7 @@ from handlers.admin import (
     delete_student, delete_instructor, handle_person_button, handle_person_delete,
 )
 from handlers.auth import (
-    login_conv, logout, handle_student_callback, handle_instructor_callback, handle_ask_course
+    login_conv, handle_student_callback, handle_instructor_callback, handle_ask_course
 )
 from handlers.courses import (
     show_courses, get_sheet, summarize_last_file,
@@ -41,7 +41,7 @@ def main():
     # Auth & Management
     app.add_handler(login_conv)
     app.add_handler(addcontent_conv)
-    app.add_handler(CommandHandler("logout", logout))
+
     
     # Courses & Sheets
     app.add_handler(CommandHandler("courses", show_courses))
