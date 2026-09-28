@@ -99,12 +99,20 @@ def main():
     # Delete webhook via direct HTTP request to avoid event loop conflict
     import requests
     try:
+        # First check current webhook status
+        response = requests.get(
+            f"https://api.telegram.org/bot{TOKEN}/getWebhookInfo",
+            timeout=10
+        )
+        print(f"Webhook info: {response.json()}")
+        
+        # Delete webhook
         response = requests.get(
             f"https://api.telegram.org/bot{TOKEN}/deleteWebhook",
             params={"drop_pending_updates": "true"},
             timeout=10
         )
-        print(f"Webhook deleted: {response.status_code}")
+        print(f"Webhook deleted: {response.status_code} - {response.json()}")
     except Exception as e:
         print(f"Webhook deletion failed: {e}")
     
