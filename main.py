@@ -98,7 +98,9 @@ def main():
     
     # Delete any existing webhook to avoid conflict with polling
     import asyncio
-    asyncio.get_event_loop().run_until_complete(app.bot.delete_webhook(drop_pending_updates=True))
+    loop = asyncio.new_event_loop()
+    loop.run_until_complete(app.bot.delete_webhook(drop_pending_updates=True))
+    loop.close()
     
     app.run_polling(timeout=30)
 
