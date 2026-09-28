@@ -86,7 +86,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_delfile_button, pattern="^delfile:"))
     app.add_handler(CallbackQueryHandler(handle_person_button, pattern="^person:"))
     app.add_handler(CallbackQueryHandler(handle_person_delete, pattern="^persondel:"))
-    app.add_handler(CallbackQueryHandler(handle_file_action, pattern="^fileaction:"))
+    app.add_handler(CallbackQueryHandler(handle_file_action, pattern="^fileact:"))
 
     # Messages
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
@@ -96,25 +96,17 @@ def main():
 
     print("البوت يعمل بنجاح مع ربط المواد التلقائي للطلاب...")
     
-    # Delete webhook via direct HTTP request to avoid event loop conflict
+    # Clear webhook via set_webhook with empty URL
     import requests
     try:
-        # First check current webhook status
-        response = requests.get(
-            f"https://api.telegram.org/bot{TOKEN}/getWebhookInfo",
+        response = requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/setWebhook",
+            json={"url": ""},
             timeout=10
         )
-        print(f"Webhook info: {response.json()}")
-        
-        # Delete webhook
-        response = requests.get(
-            f"https://api.telegram.org/bot{TOKEN}/deleteWebhook",
-            params={"drop_pending_updates": "true"},
-            timeout=10
-        )
-        print(f"Webhook deleted: {response.status_code} - {response.json()}")
+        print(f"Webhook cleared: {response.status_code} - {response.json()}")
     except Exception as e:
-        print(f"Webhook deletion failed: {e}")
+        print(f"Webhook clear failed: {e}")
     
     app.run_polling(timeout=30)
 

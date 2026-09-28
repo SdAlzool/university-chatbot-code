@@ -193,6 +193,29 @@ async def login_cancel(update, context):
     await update.message.reply_text("تم إلغاء العملية.")
     return ConversationHandler.END
 
+async def logout(update, context):
+    """Clear the active Telegram session for a student or instructor."""
+    chat_id = update.effective_chat.id
+    logged_out = False
+
+    for collection, lookup in (
+        ("students", get_student_by_chat_id),
+        ("instructors", get_instructor_by_chat_id),
+    ):
+        document_id, _ = await asyncio.to_thread(lookup, chat_id)
+        if document_id:
+            await asyncio.to_thread(
+                db.collection(collection).document(document_id).update,
+                {"chat_id": None, "last_active": None},
+            )
+            logged_out = True
+
+    if logged_out:
+        await update.effective_message.reply_text("Logged out successfully.")
+    else:
+        await update.effective_message.reply_text("You are not logged in.")
+
+
 login_conv = ConversationHandler(
     entry_points=[
         CommandHandler("login", login_start),
