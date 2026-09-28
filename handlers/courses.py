@@ -43,8 +43,9 @@ async def show_my_courses(update, context):
         folder = c.get("folder", "")
         buttons.append([InlineKeyboardButton(f"📚 {name}", callback_data=f"mycourse:{folder}")])
     
+    from formatting import my_courses_list
     await update.message.reply_text(
-        "📚 **موادّي**\n\nاختر المادة لعرض التفاصيل:",
+        my_courses_list(courses),
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="Markdown"
     )
@@ -90,6 +91,10 @@ async def handle_course_option(update, context):
         return
     
     option, folder = parts
+
+    if not await _can_access_folder(update, folder):
+        await query.message.reply_text("ليس لديك صلاحية الوصول إلى هذا المقرر.")
+        return
     
     # Get files from GitHub
     files = await asyncio.to_thread(list_course_files_with_sha, folder)
@@ -133,43 +138,39 @@ async def handle_course_option(update, context):
 
 async def _send_file_with_options(target, context, file, folder):
     """Show file with options (download, translate, summarize)."""
+    context.user_data["last_file"] = file
+    context.user_data["current_folder"] = folder
     buttons = [
-        [InlineKeyboardButton("⬇️ تحميل", callback_data=f"fileaction:download:{folder}")],
-        [InlineKeyboardButton("🌐 ترجمة", callback_data=f"fileaction:translate:{folder}")],
-        [InlineKeyboardButton("📝 تلخيص", callback_data=f"fileaction:summarize:{folder}")],
+        [InlineKeyboardButton("⬇️ تنزيل", callback_data="coursefile:download")],
+        [InlineKeyboardButton("🌐 ترجمة", callback_data="coursefile:translate")],
+        [InlineKeyboardButton("📝 تلخيص", callback_data="coursefile:summarize")],
         [InlineKeyboardButton("🔙 رجوع", callback_data=f"mycourse:{folder}")],
     ]
     await target.reply_text(
         f"📄 **{file['name']}**\n\nاختر:",
         reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
 
 
-async def handle_file_action(update, context):
-    """Handle file actions (download, translate, summarize)."""
+async def handle_course_file_action(update, context):
+    """Handle download, translation, and summary actions for a selected course file."""
     query = update.callback_query
     await query.answer()
-    
-    parts = query.data.removeprefix("fileaction:").split(":", 2)
-    if len(parts) != 3:
+    action = query.data.removeprefix("coursefile:")
+    file = context.user_data.get("last_file")
+    folder = context.user_data.get("current_folder", "")
+    if action not in {"download", "translate", "summarize"} or not file:
+        await query.message.reply_text("انتهت صلاحية الملف. اطلبه مرة أخرى.")
         return
-    
-    action, folder, file_index = parts
-    
-    # Get the file
-    files = context.user_data.get("pending_files", [])
-    try:
-        file = files[int(file_index)]
-    except (ValueError, IndexError):
-        await query.message.reply_text("انتهت صلاحية القائمة. اطلب الملفات مرة أخرى.")
+    if not await _can_access_folder(update, folder):
+        await query.message.reply_text("ليس لديك صلاحية الوصول إلى هذا الملف.")
         return
-    
     if action == "download":
         await _send_file(query.message, file)
     elif action == "translate":
         await _translate_file(query.message, file)
-    elif action == "summarize":
+    else:
         await _summarize_file(query.message, file)
 
 
@@ -259,8 +260,7 @@ async def _available_courses_for_user(update):
         # Return only courses assigned to this student
         assigned_courses = student.get("courses") or []
         if not assigned_courses:
-            # If no courses assigned, return all courses (fallback)
-            return await _all_courses(), student_id
+            return [], student_id
         # Get full course details for assigned courses
         all_courses = await _all_courses()
         student_courses = [c for c in all_courses if c.get("folder") in assigned_courses]
@@ -318,6 +318,7 @@ async def _send_sheet(target, context, folder):
         context.user_data["last_file"] = files[0]
         await _send_file(target, files[0])
         return
+    context.user_data["current_folder"] = folder
     context.user_data["pending_files"] = files
     buttons = [[InlineKeyboardButton(file["name"], callback_data=f"filesel:{i}")] for i, file in enumerate(files)]
     await target.reply_text("اختر الملف:", reply_markup=InlineKeyboardMarkup(buttons))
@@ -327,7 +328,11 @@ async def get_sheet(update, context):
         await update.message.reply_text("هذه الخدمة للطلاب المسجلين أو الأدمن فقط. اكتب /login.")
         return
     if context.args:
-        await _send_sheet(update.message, context, context.args[0])
+        folder = context.args[0]
+        if not await _can_access_folder(update, folder):
+            await update.message.reply_text("ليس لديك صلاحية الوصول إلى هذا المقرر.")
+            return
+        await _send_sheet(update.message, context, folder)
         return
     courses = await _all_courses()
     buttons = [[InlineKeyboardButton(c.get("name", "مادة"), callback_data=f"sheet:{c.get('folder', '')}")] for c in courses]

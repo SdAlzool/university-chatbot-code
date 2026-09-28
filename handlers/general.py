@@ -113,16 +113,9 @@ async def _handle_admin_command(update, context, text):
     return False
 
 
-HELP_TEXT = (
-    "🎓 بوت الخدمات الجامعية\n\n"
-    "أهلاً بك! أنا مساعدك الأكاديمي، أرسل سؤالك أو ملفك وسأجيبك فوراً.\n\n"
-    "الخدمات المتاحة:\n"
-    "• 💬 إجابة الاستفسارات الأكاديمية العامة.\n"
-    "• 📄 تلخيص وترجمة الملفات (PDF / Word / صور).\n"
-    "• 🎙️ تحويل المقاطع الصوتية إلى نص والإجابة عليها.\n"
-    "• 📚 عرض الشيتات والمقررات (أرسل /login للتسجيل).\n\n"
-    "⚙️ أدمن المحتوى؟ أرسل /admin للوحة التحكم."
-)
+from formatting import help_message
+
+HELP_TEXT = help_message()
 
 
 async def start(update, context):

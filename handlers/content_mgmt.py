@@ -75,8 +75,9 @@ async def addcontent_start(update, context):
         [InlineKeyboardButton("مادة موجودة", callback_data="addmenu:existing")],
         [InlineKeyboardButton("مادة جديدة", callback_data="addmenu:new")],
     ]
+    from formatting import add_content_prompt
     await update.effective_message.reply_text(
-        "اختر نوع المادة التي تريد إضافة محتوى لها:",
+        add_content_prompt(),
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
     return ADD_MENU

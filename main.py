@@ -1,3 +1,4 @@
+import logging
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
     CallbackQueryHandler
@@ -10,11 +11,11 @@ from handlers.admin import (
     delete_student, delete_instructor, handle_person_button, handle_person_delete,
 )
 from handlers.auth import (
-    login_conv, handle_student_callback, handle_instructor_callback, handle_ask_course
+    login_conv, logout, handle_student_callback, handle_instructor_callback, handle_ask_course
 )
 from handlers.courses import (
     show_courses, get_sheet, summarize_last_file,
-    handle_sheet_button, handle_file_button,
+    handle_sheet_button, handle_file_button, handle_course_file_action,
     show_my_courses, handle_my_course_button, handle_course_option, handle_back_my_courses
 )
 from handlers.content_mgmt import (
@@ -30,13 +31,23 @@ from handlers.file_tools import (
 )
 from handlers.admin_panel import admin_panel, _admin_callback
 
+
+async def _on_error(update, context):
+    error = context.error
+    logging.error(
+        "Unhandled Telegram update error",
+        exc_info=(type(error), error, error.__traceback__),
+    )
+
 def main():
     app = Application.builder().token(TOKEN).build()
+    app.add_error_handler(_on_error)
 
     # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("myid", show_my_id))
+    app.add_handler(CommandHandler("logout", logout))
     
     # Auth & Management
     app.add_handler(login_conv)
@@ -87,6 +98,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_person_button, pattern="^person:"))
     app.add_handler(CallbackQueryHandler(handle_person_delete, pattern="^persondel:"))
     app.add_handler(CallbackQueryHandler(handle_file_action, pattern="^fileact:"))
+    app.add_handler(CallbackQueryHandler(handle_course_file_action, pattern="^coursefile:"))
 
     # Messages
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))

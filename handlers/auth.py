@@ -89,29 +89,31 @@ async def login_ask_otp(update, context):
 
 async def _show_student_welcome(message):
     """Show welcome menu for students after login."""
+    from formatting import student_welcome_menu
     buttons = [
         [InlineKeyboardButton("❓ سؤال عن الجامعة", callback_data="student:university")],
         [InlineKeyboardButton("📚 سؤال عن مادة", callback_data="student:course_question")],
         [InlineKeyboardButton("📖 موادّي", callback_data="student:mycourses")],
     ]
     await message.reply_text(
-        "✅ تم تسجيل الدخول بنجاح!\n\n"
-        "اختر ما تريد:",
-        reply_markup=InlineKeyboardMarkup(buttons)
+        student_welcome_menu(),
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="Markdown"
     )
 
 
 async def _show_instructor_welcome(message):
     """Show welcome menu for instructors after login."""
+    from formatting import instructor_welcome_menu
     buttons = [
         [InlineKeyboardButton("📚 عرض المواد", callback_data="instructor:view_courses")],
         [InlineKeyboardButton("➕ إضافة مادة", callback_data="instructor:add_course")],
         [InlineKeyboardButton("🗑️ حذف مادة", callback_data="instructor:delete_course")],
     ]
     await message.reply_text(
-        "✅ تم تسجيل الدخول بنجاح!\n\n"
-        "مرحباً بك أستاذي! اختر ما تريد:",
-        reply_markup=InlineKeyboardMarkup(buttons)
+        instructor_welcome_menu(),
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="Markdown"
     )
 
 

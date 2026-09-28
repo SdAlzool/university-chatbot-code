@@ -59,17 +59,10 @@ def _make_update(phone):
 # Help / Main Menu
 # ============================================================
 
+from formatting import help_message
+
 def wa_help(phone):
-    send_text(phone, (
-        "🎓 بوت الخدمات الجامعية\n\n"
-        "أهلاً بك! أنا مساعدك الأكاديمي، أرسل سؤالك أو ملفك وسأجيبك فوراً.\n\n"
-        "الخدمات المتاحة:\n"
-        "• 💬 إجابة الاستفسارات الأكاديمية العامة.\n"
-        "• 📄 تلخيص وترجمة الملفات (PDF / Word / صور).\n"
-        "• 🎙️ تحويل المقاطع الصوتية إلى نص والإجابة عليها.\n"
-        "• 📚 عرض الشيتات والمقررات (أرسل /login للتسجيل).\n\n"
-        "⚙️ أدمن المحتوى؟ أرسل /admin للوحة التحكم."
-    ))
+    send_text(phone, help_message())
 
 
 def wa_show_main_menu(phone):
@@ -189,7 +182,7 @@ def wa_logout(phone):
 # ============================================================
 
 async def wa_show_courses(phone):
-    courses = await _all_courses()
+    courses = await _wa_available_courses(phone)
     if not courses:
         send_text(phone, "لا توجد مقررات.")
         return
@@ -206,8 +199,7 @@ async def wa_show_my_courses(phone):
     
     assigned_courses = student.get("courses") or []
     if not assigned_courses:
-        # Fallback to all courses if none assigned
-        courses = await _all_courses()
+        courses = []
     else:
         all_courses = await _all_courses()
         courses = [c for c in all_courses if c.get("folder") in assigned_courses]
@@ -229,6 +221,9 @@ async def wa_show_my_courses(phone):
 
 
 async def wa_sheets_for(phone, folder):
+    if not await _wa_can_access_folder(phone, folder):
+        send_text(phone, "ليس لديك صلاحية الوصول إلى هذا المقرر.")
+        return
     files = await asyncio.to_thread(list_course_files_with_sha, folder) or []
     if not files:
         send_text(phone, "لا توجد ملفات لهذه المادة.")
@@ -245,6 +240,9 @@ async def wa_sheets_for(phone, folder):
 
 async def wa_my_course_selected(phone, folder):
     """Handle when student selects a course from my courses."""
+    if not await _wa_can_access_folder(phone, folder):
+        send_text(phone, "ليس لديك صلاحية الوصول إلى هذا المقرر.")
+        return
     state = get_state(phone)
     state["selected_course"] = folder
     
@@ -273,6 +271,9 @@ async def wa_course_option(phone, action):
         return
     
     option, folder = parts
+    if not await _wa_can_access_folder(phone, folder):
+        send_text(phone, "ليس لديك صلاحية الوصول إلى هذا المقرر.")
+        return
     
     # Get files from GitHub
     files = await asyncio.to_thread(list_course_files_with_sha, folder) or []
@@ -341,6 +342,11 @@ async def wa_summarize(phone):
 # Content: Add
 # ============================================================
 
+async def _wa_can_access_folder(phone, folder):
+    courses = await _wa_available_courses(phone)
+    return any(str(course.get("folder", "")) == folder for course in courses)
+
+
 async def _wa_available_courses(phone):
     instructor_id, instructor = await asyncio.to_thread(get_instructor_by_chat_id, "wa:" + phone)
     if instructor_id:
@@ -350,7 +356,7 @@ async def _wa_available_courses(phone):
     if student:
         assigned_courses = student.get("courses") or []
         if not assigned_courses:
-            return await _all_courses()
+            return []
         all_courses = await _all_courses()
         return [c for c in all_courses if c.get("folder") in assigned_courses]
     if wa_is_admin(phone):
@@ -780,7 +786,7 @@ async def route_text(phone, text):
         if not is_material_user:
             send_text(phone, "هذه الخدمة للطلاب المسجلين أو الأدمن فقط.")
             return
-        courses = await _all_courses()
+        courses = await _wa_available_courses(phone)
         items = [(f"sheet:{c.get('folder', '')}", (c.get("name") or "مادة")[:24], (c.get("folder") or "")[:72]) for c in courses[:100]]
         if not items:
             send_text(phone, "لا توجد مقررات.")
