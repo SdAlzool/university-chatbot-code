@@ -108,17 +108,16 @@ def main():
 
     print("البوت يعمل بنجاح مع ربط المواد التلقائي للطلاب...")
     
-    # Clear webhook via set_webhook with empty URL
+    # Clear webhook via deleteWebhook API
     import requests
     try:
-        response = requests.post(
-            f"https://api.telegram.org/bot{TOKEN}/setWebhook",
-            json={"url": ""},
+        response = requests.get(
+            f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=true",
             timeout=10
         )
-        print(f"Webhook cleared: {response.status_code} - {response.json()}")
+        print(f"Webhook deleted: {response.status_code} - {response.json()}")
     except Exception as e:
-        print(f"Webhook clear failed: {e}")
+        print(f"Webhook delete failed: {e}")
     
     app.run_polling(timeout=30)
 
