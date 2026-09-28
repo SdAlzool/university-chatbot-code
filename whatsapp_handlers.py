@@ -65,6 +65,30 @@ def wa_help(phone):
     send_text(phone, help_message())
 
 
+def wa_show_welcome(phone):
+    """Show welcome message with login/guest options."""
+    from whatsapp_api import send_buttons
+    send_buttons(
+        phone,
+        "🎓 أهلاً بك في بوت الخدمات الجامعية!\n\nكيف تريد المتابعة؟",
+        [("login", "🔐 تسجيل الدخول"), ("guest", "👤 متابعة كزائر")]
+    )
+
+
+def wa_show_guest_menu(phone):
+    """Show guest menu."""
+    send_text(phone, (
+        "👤 مرحباً بك كزائر!\n\n"
+        "يمكنك الآن:\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "💬 طرح أسئلة عن الجامعة\n"
+        "📄 إرسال ملف لتلخيصه أو ترجمته\n"
+        "🎙️ إرسال رسالة صوتية\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "للوصول للمقررات والشيتات سجّل الدخول"
+    ))
+
+
 def wa_show_main_menu(phone):
     items = [
         ("menu:ask", "اسألني سؤالاً", "أي سؤال عن الجامعة"),
@@ -163,7 +187,13 @@ async def handle_login_otp(phone, otp):
     )
     reset_state(phone)
     send_text(phone, "تم تسجيل الدخول بنجاح ✅")
-    wa_show_main_menu(phone)
+    # Show appropriate menu based on role
+    if pending["role"] == "student":
+        from formatting import student_welcome_menu
+        send_text(phone, student_welcome_menu())
+    else:
+        from formatting import instructor_welcome_menu
+        send_text(phone, instructor_welcome_menu())
 
 
 def wa_logout(phone):
@@ -638,13 +668,7 @@ async def handle_callback(phone, payload):
         start_login(phone)
         return
     if payload == "guest":
-        send_text(phone, (
-            "أهلاً بك كزائر 👋 يمكنك الآن:\n"
-            "• طرح أي سؤال عن الجامعة.\n"
-            "• إرسال ملف وسألخصه أو أترجمه.\n"
-            "• إرسال رسالة صوتية وسأحوّلها لنص.\n\n"
-            "للدخول إلى المقررات والشيتات سجّل الدخول."
-        ))
+        wa_show_guest_menu(phone)
         return
     if payload.startswith("menu:"):
         await wa_menu_action(phone, payload.removeprefix("menu:"))
@@ -831,8 +855,7 @@ async def process_wa_message(phone, msg):
     if not state.get("welcome_sent") and not was_welcome_sent(phone):
         state["welcome_sent"] = True
         mark_welcome_sent(phone)
-        wa_help(phone)
-        send_buttons(phone, "كيف تريد المتابعة؟", [("login", "تسجيل الدخول"), ("guest", "المتابعة كزائر")])
+        wa_show_welcome(phone)
         return
 
     msg_type = msg.get("type")

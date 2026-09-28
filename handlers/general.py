@@ -123,9 +123,27 @@ async def start(update, context):
     _, student = await asyncio.to_thread(get_student_by_chat_id, chat_id)
     _, instructor = await asyncio.to_thread(get_instructor_by_chat_id, chat_id)
     if student or instructor:
-        await update.message.reply_text("أهلاً بك مجدداً. كيف أساعدك؟ اكتب /help لعرض الخدمات.")
+        from .auth import _show_student_welcome, _show_instructor_welcome
+        if student:
+            await _show_student_welcome(update.message)
+        else:
+            await _show_instructor_welcome(update.message)
         return
-    await update.message.reply_text(HELP_TEXT)
+    
+    # Show welcome message with login/guest options
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    welcome_text = (
+        "🎓 أهلاً بك في بوت الخدمات الجامعية!\n\n"
+        "كيف تريد المتابعة؟"
+    )
+    keyboard = [
+        [InlineKeyboardButton("🔐 تسجيل الدخول", callback_data="btn_start_login")],
+        [InlineKeyboardButton("👤 متابعة كزائر", callback_data="btn_guest_mode")],
+    ]
+    await update.message.reply_text(
+        welcome_text,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 
 async def help_command(update, context):
@@ -136,15 +154,22 @@ async def handle_welcome_buttons(update, context):
     query = update.callback_query
     await query.answer()
     if query.data == "btn_start_login":
-        await query.edit_message_text("اكتب /login لبدء تسجيل الدخول.")
-    else:
         await query.edit_message_text(
-            "أهلاً بك كزائر 👋 يمكنك الآن:\n"
-            "• طرح أي سؤال عن الجامعة.\n"
-            "• إرسال ملف وسألخصه أو أترجمه.\n"
-            "• إرسال رسالة صوتية وسأحوّلها لنص.\n\n"
-            "للدخول إلى المقررات والشيتات سجّل الدخول من /login"
+            "🔐 تسجيل الدخول\n\n"
+            "اكتب /login لبدء تسجيل الدخول."
         )
+    else:
+        guest_text = (
+            "👤 مرحباً بك كزائر!\n\n"
+            "يمكنك الآن:\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "💬 طرح أسئلة عن الجامعة\n"
+            "📄 إرسال ملف لتلخيصه أو ترجمته\n"
+            "🎙️ إرسال رسالة صوتية\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "للوصول للمقررات والشيتات سجّل الدخول"
+        )
+        await query.edit_message_text(guest_text)
 
 
 async def handle_message(update, context):
