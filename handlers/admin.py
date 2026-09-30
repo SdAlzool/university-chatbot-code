@@ -1,3 +1,4 @@
+"""Admin handlers - simplified."""
 import asyncio
 import re
 from firebase_admin import firestore
@@ -6,11 +7,14 @@ from telegram.ext import ContextTypes
 from config import ADMIN_TELEGRAM_IDS, ADMIN_WHATSAPP_NUMBERS, db
 from github_utils import list_repository_folders
 
+
 def is_bootstrap_admin(user_id):
     return user_id in ADMIN_TELEGRAM_IDS
 
+
 def is_stored_admin(user_id):
     return db.collection("admins").document(str(user_id)).get().exists
+
 
 async def user_is_admin(update: Update):
     user = update.effective_user
@@ -26,6 +30,7 @@ async def user_is_admin(update: Update):
         return True
     return await asyncio.to_thread(is_stored_admin, user.id)
 
+
 async def require_admin(update: Update):
     if await user_is_admin(update):
         return True
@@ -34,10 +39,12 @@ async def require_admin(update: Update):
         await message.reply_text("ليس لديك صلاحية إدارة المشروع.")
     return False
 
+
 async def show_my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         f"Telegram User ID الخاص بك: {update.effective_user.id}"
     )
+
 
 async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update):
@@ -84,6 +91,7 @@ async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "مثال: /removeadmin 123456789"
     )
 
+
 async def list_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update):
         return
@@ -100,6 +108,7 @@ async def list_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("- لا يوجد")
     await update.effective_message.reply_text("\n".join(lines))
 
+
 async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update):
         return
@@ -113,7 +122,6 @@ async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def add_admin_by_id(update: Update, admin_id: int):
-    """Grant admin access after the caller has already been authorized."""
     actor = update.effective_user
     await asyncio.to_thread(
         db.collection("admins").document(str(admin_id)).set,
@@ -124,6 +132,7 @@ async def add_admin_by_id(update: Update, admin_id: int):
         merge=True,
     )
     await update.effective_message.reply_text(f"تمت إضافة المشرف: {admin_id}")
+
 
 async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update):
@@ -138,7 +147,6 @@ async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def remove_admin_by_id(update: Update, admin_id: int):
-    """Remove a stored admin after the caller has already been authorized."""
     if is_bootstrap_admin(admin_id):
         await update.effective_message.reply_text(
             "لا يمكن إزالة مشرف أساسي من البوت. أزله من ADMIN_TELEGRAM_IDS في .env ثم أعد تشغيل البوت."
@@ -186,7 +194,6 @@ async def list_instructors(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def list_all_people(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show students and instructors in two separate Telegram messages."""
     if not await require_admin(update):
         return
     await _list_people(update, "students", "الطلاب")
