@@ -1,5 +1,4 @@
-"""WhatsApp bot handlers — login, courses, content, upload, voice, routing."""
-
+"""WhatsApp bot handlers — simplified version."""
 import asyncio
 import logging
 import secrets
@@ -56,18 +55,10 @@ def _make_update(phone):
 
 
 # ============================================================
-# Help / Main Menu
+# Welcome / Main Menu
 # ============================================================
 
-from formatting import help_message
-
-def wa_help(phone):
-    send_text(phone, help_message())
-
-
 def wa_show_welcome(phone):
-    """Show welcome message with login/guest options."""
-    from whatsapp_api import send_buttons
     send_buttons(
         phone,
         "🎓 أهلاً بك في بوت الخدمات الجامعية!\n\nكيف تريد المتابعة؟",
@@ -76,7 +67,6 @@ def wa_show_welcome(phone):
 
 
 def wa_show_guest_menu(phone):
-    """Show guest menu."""
     send_text(phone, (
         "👤 مرحباً بك كزائر!\n\n"
         "يمكنك الآن:\n"
@@ -187,7 +177,6 @@ async def handle_login_otp(phone, otp):
     )
     reset_state(phone)
     send_text(phone, "تم تسجيل الدخول بنجاح ✅")
-    # Show appropriate menu based on role
     if pending["role"] == "student":
         from formatting import student_welcome_menu
         send_text(phone, student_welcome_menu())
@@ -211,6 +200,27 @@ def wa_logout(phone):
 # Courses / Sheets
 # ============================================================
 
+async def _wa_available_courses(phone):
+    instructor_id, instructor = await asyncio.to_thread(get_instructor_by_chat_id, "wa:" + phone)
+    if instructor_id:
+        return instructor.get("courses") or []
+    student_id, student = await asyncio.to_thread(get_student_by_chat_id, "wa:" + phone)
+    if student:
+        assigned_courses = student.get("courses") or []
+        if not assigned_courses:
+            return []
+        all_courses = await _all_courses()
+        return [c for c in all_courses if c.get("folder") in assigned_courses]
+    if wa_is_admin(phone):
+        return await _all_courses()
+    return []
+
+
+async def _wa_can_access_folder(phone, folder):
+    courses = await _wa_available_courses(phone)
+    return any(str(course.get("folder", "")) == folder for course in courses)
+
+
 async def wa_show_courses(phone):
     courses = await _wa_available_courses(phone)
     if not courses:
@@ -221,32 +231,26 @@ async def wa_show_courses(phone):
 
 
 async def wa_show_my_courses(phone):
-    """Show only the student's assigned courses."""
     student_id, student = await asyncio.to_thread(get_student_by_chat_id, "wa:" + phone)
     if not student:
         send_text(phone, "غير مسجل دخول. استخدم أمر /login.")
         return
-    
     assigned_courses = student.get("courses") or []
     if not assigned_courses:
         courses = []
     else:
         all_courses = await _all_courses()
         courses = [c for c in all_courses if c.get("folder") in assigned_courses]
-    
     if not courses:
         send_text(phone, "لا توجد مواد مخصصة لك.")
         return
-    
     state = get_state(phone)
     state["my_courses"] = courses
-    
     items = []
     for c in courses:
         name = c.get("name", "مادة")
         folder = c.get("folder", "")
         items.append((f"mycourse:{folder}", name[:24], folder[:72]))
-    
     send_list(phone, "📚 موادّي:\nاختر المادة لعرض التفاصيل:", items, header="المواد")
 
 
@@ -269,49 +273,38 @@ async def wa_sheets_for(phone, folder):
 
 
 async def wa_my_course_selected(phone, folder):
-    """Handle when student selects a course from my courses."""
     if not await _wa_can_access_folder(phone, folder):
         send_text(phone, "ليس لديك صلاحية الوصول إلى هذا المقرر.")
         return
     state = get_state(phone)
     state["selected_course"] = folder
-    
-    # Get course name
     courses = await _all_courses()
     course_name = "المادة"
     for c in courses:
         if c.get("folder") == folder:
             course_name = c.get("name", "المادة")
             break
-    
     buttons = [
         ("courseopt:syllabus:" + folder, "📋 المقرر"),
         ("courseopt:refs:" + folder, "📖 المراجع"),
         ("courseopt:exams:" + folder, "📝 الامتحانات"),
         ("sheet:" + folder, "📄 الشيتات"),
     ]
-    
     send_buttons(phone, f"📚 {course_name}\n\nاختر:", buttons)
 
 
 async def wa_course_option(phone, action):
-    """Handle course options (syllabus, refs, exams)."""
     parts = action.split(":", 1)
     if len(parts) != 2:
         return
-    
     option, folder = parts
     if not await _wa_can_access_folder(phone, folder):
         send_text(phone, "ليس لديك صلاحية الوصول إلى هذا المقرر.")
         return
-    
-    # Get files from GitHub
     files = await asyncio.to_thread(list_course_files_with_sha, folder) or []
     if not files:
         send_text(phone, "لا توجد ملفات لهذه المادة.")
         return
-    
-    # Filter files based on option
     filtered_files = []
     for f in files:
         name_lower = f["name"].lower()
@@ -321,19 +314,14 @@ async def wa_course_option(phone, action):
             filtered_files.append(f)
         elif option == "exams" and any(kw in name_lower for kw in ["امتحان", "exam", "quiz", "final", "midterm"]):
             filtered_files.append(f)
-    
     if not filtered_files:
-        # If no specific files found, show all files
         filtered_files = files
-    
     state = get_state(phone)
     state["pending_files"] = filtered_files
-    
     if len(filtered_files) == 1:
         state["last_file"] = filtered_files[0]
         await asyncio.to_thread(send_file_from_github, phone, filtered_files[0])
         return
-    
     items = [(f"file:{i}", f["name"][:24], f["name"][:72]) for i, f in enumerate(filtered_files[:100])]
     send_list(phone, "اختر الملف:", items, header="الملفات")
 
@@ -371,28 +359,6 @@ async def wa_summarize(phone):
 # ============================================================
 # Content: Add
 # ============================================================
-
-async def _wa_can_access_folder(phone, folder):
-    courses = await _wa_available_courses(phone)
-    return any(str(course.get("folder", "")) == folder for course in courses)
-
-
-async def _wa_available_courses(phone):
-    instructor_id, instructor = await asyncio.to_thread(get_instructor_by_chat_id, "wa:" + phone)
-    if instructor_id:
-        return instructor.get("courses") or []
-    # Check if student
-    student_id, student = await asyncio.to_thread(get_student_by_chat_id, "wa:" + phone)
-    if student:
-        assigned_courses = student.get("courses") or []
-        if not assigned_courses:
-            return []
-        all_courses = await _all_courses()
-        return [c for c in all_courses if c.get("folder") in assigned_courses]
-    if wa_is_admin(phone):
-        return await _all_courses()
-    return []
-
 
 def wa_add_content_start(phone, is_admin):
     state = get_state(phone)
@@ -531,7 +497,7 @@ async def wa_del_select_file(phone, action):
         send_text(phone, "قائمة منتهية الصلاحية. ابدأ من جديد.")
         reset_state(phone)
         return
-    send_buttons(phone, f"حذف {file['name']}؟",
+    send_buttons(phone, f"حذف {file['name']}？",
                  [("delfileconfirm:yes", "نعم احذف"), ("delfileconfirm:no", "إلغاء")])
     state["data"]["del_file_index"] = index
     state["state"] = "DEL_FILE_CONFIRM"
@@ -659,11 +625,9 @@ async def handle_voice(phone, media_id):
 # ============================================================
 
 async def handle_callback(phone, payload):
-    # Admin panel callbacks (waadm:*)
     if payload.startswith("waadm:"):
         if wa_admin_callback(phone, payload):
             return
-
     if payload == "login":
         start_login(phone)
         return
@@ -741,13 +705,10 @@ async def route_text(phone, text):
     if text.strip().lower() in ("قائمة", "menu", "مساعدة", "help", "الخدمات"):
         wa_show_main_menu(phone)
         return
-    
-    # My courses command
     if text.strip() in ("موادّي", "موادي", "my courses", "mycourses"):
         await wa_show_my_courses(phone)
         return
 
-    # Admin panel text commands
     if is_admin:
         t = text.strip().lower()
         if any(w in t for w in ("إدارة المحتوى", "لوحة الإدارة", "لوحة الادارة", "الأدمن", "الادمنية", "admin panel", "admin")):
@@ -794,18 +755,15 @@ async def route_text(phone, text):
         else:
             start_login(phone)
         return
-
     if intent == "LOGOUT":
         wa_logout(phone)
         return
-
     if intent in ("GET_COURSES", "DR_GET_COURSES"):
         if not is_material_user:
             send_text(phone, "هذه الخدمة للطلاب المسجلين أو الأدمن فقط.")
             return
         await wa_show_courses(phone)
         return
-
     if intent in ("GET_SHEETS", "DR_GET_SHEETS"):
         if not is_material_user:
             send_text(phone, "هذه الخدمة للطلاب المسجلين أو الأدمن فقط.")
@@ -817,21 +775,18 @@ async def route_text(phone, text):
             return
         send_list(phone, "اختر المادة لعرض شيتاتها:", items, header="الشيتات")
         return
-
     if intent == "SUMMARIZE":
         if not is_material_user:
             send_text(phone, "هذه الخدمة للطلاب المسجلين أو الأدمن فقط.")
             return
         await wa_summarize(phone)
         return
-
     if intent == "DR_ADD_CONTENT":
         if not (instructor_id or is_admin):
             send_text(phone, "هذه الخدمة لأعضاء هيئة التدريس أو الأدمن فقط.")
             return
         wa_add_content_start(phone, bool(is_admin and not instructor_id))
         return
-
     if intent == "DR_DELETE_CONTENT":
         if not (instructor_id or is_admin):
             send_text(phone, "هذه الخدمة لأعضاء هيئة التدريس أو الأدمن فقط.")
@@ -897,7 +852,7 @@ async def process_wa_message(phone, msg):
         }
         state["state"] = "UPLOAD_ASK_ACTION"
         save_pending_upload(phone, file_data, meta.get("filename") or meta.get("caption") or "ملف", file_mime or _guess_mime(meta.get("filename") or ""))
-        send_list(phone, "استلمت الملف ✅ ماذا تريد أن أفعل به？", [
+        send_list(phone, "استلمت الملف ✅ ماذا تريد أن أفعل به؟", [
             ("uploadact:summarize", "تلخيص كنص", "ملخص نصي بالعربي"),
             ("uploadact:summarize_pdf", "تلخيص كـ PDF", "تحميل ملف PDF"),
             ("uploadact:translate", "ترجمة كنص", "ترجمة تلقائية"),
@@ -938,7 +893,6 @@ async def process_wa_message(phone, msg):
         send_text(phone, "استخدم الأزرار أعلاه للمتابعة.")
         return
 
-    # Admin panel add/edit modes
     if current and current.startswith("WAADMIN_ADD_"):
         section = current.replace("WAADMIN_ADD_", "").lower()
         wa_admin_add_execute(phone, section, text)
