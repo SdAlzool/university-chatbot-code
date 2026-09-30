@@ -1,4 +1,4 @@
-"""General chat, welcome, and voice handlers."""
+"""General chat, welcome, and voice handlers - simplified."""
 import asyncio
 import logging
 import re
@@ -129,8 +129,6 @@ async def start(update, context):
         else:
             await _show_instructor_welcome(update.message)
         return
-    
-    # Show welcome message with login/guest options
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     welcome_text = (
         "🎓 أهلاً بك في بوت الخدمات الجامعية!\n\n"
@@ -159,17 +157,8 @@ async def handle_welcome_buttons(update, context):
             "اكتب /login لبدء تسجيل الدخول."
         )
     else:
-        guest_text = (
-            "👤 مرحباً بك كزائر!\n\n"
-            "يمكنك الآن:\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "💬 طرح أسئلة عن الجامعة\n"
-            "📄 إرسال ملف لتلخيصه أو ترجمته\n"
-            "🎙️ إرسال رسالة صوتية\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            "للوصول للمقررات والشيتات سجّل الدخول"
-        )
-        await query.edit_message_text(guest_text)
+        from formatting import guest_menu
+        await query.edit_message_text(guest_menu())
 
 
 async def handle_message(update, context):
@@ -188,7 +177,6 @@ async def handle_message(update, context):
     if text.lower() in ("مساعدة", "help", "المساعدة", "الخدمات", "menu", "قائمة"):
         await update.message.reply_text(HELP_TEXT)
         return
-    # My courses command
     if text.strip() in ("موادّي", "موادي", "my courses", "mycourses"):
         await show_my_courses(update, context)
         return
