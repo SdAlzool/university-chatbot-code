@@ -27,22 +27,18 @@ async def show_courses(update, context):
     await update.message.reply_text("المقررات المتاحة:\n" + ("\n".join(f"- {c.get('name', '')}" for c in courses) or "لا توجد مقررات."))
 
 async def show_my_courses(update, context):
-    """Show only the student's assigned courses with options."""
     if not await _can_access_materials(update):
         await update.message.reply_text("هذه الخدمة للطلاب المسجلين أو الأدمن فقط. اكتب /login.")
         return
-    
     courses, student_id = await _available_courses_for_user(update)
     if not courses:
         await update.message.reply_text("لا توجد مواد مخصصة لك. تواصل مع الأدمن.")
         return
-    
     buttons = []
     for c in courses:
         name = c.get("name", "مادة")
         folder = c.get("folder", "")
         buttons.append([InlineKeyboardButton(f"📚 {name}", callback_data=f"mycourse:{folder}")])
-    
     from formatting import my_courses_list
     await update.message.reply_text(
         my_courses_list(courses),
@@ -51,22 +47,16 @@ async def show_my_courses(update, context):
     )
 
 async def handle_my_course_button(update, context):
-    """Handle when student clicks on a course."""
     query = update.callback_query
     await query.answer()
     folder = query.data.removeprefix("mycourse:")
-    
-    # Store selected course
     context.user_data["selected_course"] = folder
-    
-    # Get course name
     courses = await _all_courses()
     course_name = "المادة"
     for c in courses:
         if c.get("folder") == folder:
             course_name = c.get("name", "المادة")
             break
-    
     buttons = [
         [InlineKeyboardButton("📋 المقرر", callback_data=f"courseopt:syllabus:{folder}")],
         [InlineKeyboardButton("📖 المراجع", callback_data=f"courseopt:refs:{folder}")],
@@ -74,7 +64,6 @@ async def handle_my_course_button(update, context):
         [InlineKeyboardButton("📄 الشيتات", callback_data=f"courseopt:sheets:{folder}")],
         [InlineKeyboardButton("🔙 رجوع", callback_data="backmycourses")],
     ]
-    
     await query.edit_message_text(
         f"📚 **{course_name}**\n\nاختر:",
         reply_markup=InlineKeyboardMarkup(buttons),
@@ -82,27 +71,19 @@ async def handle_my_course_button(update, context):
     )
 
 async def handle_course_option(update, context):
-    """Handle course options (syllabus, refs, exams, sheets)."""
     query = update.callback_query
     await query.answer()
-    
     parts = query.data.removeprefix("courseopt:").split(":", 1)
     if len(parts) != 2:
         return
-    
     option, folder = parts
-
     if not await _can_access_folder(update, folder):
         await query.message.reply_text("ليس لديك صلاحية الوصول إلى هذا المقرر.")
         return
-    
-    # Get files from GitHub
     files = await asyncio.to_thread(list_course_files_with_sha, folder)
     if not files:
         await query.message.reply_text("لا توجد ملفات لهذه المادة.")
         return
-    
-    # Filter files based on option
     filtered_files = []
     for f in files:
         name_lower = f["name"].lower()
@@ -115,29 +96,20 @@ async def handle_course_option(update, context):
         elif option == "sheets":
             filtered_files = files
             break
-    
     if not filtered_files:
         await query.message.reply_text("لا توجد ملفات لهذا القسم.")
         return
-    
-    # Show files
     if len(filtered_files) == 1:
         context.user_data["last_file"] = filtered_files[0]
         await _send_file_with_options(query.message, context, filtered_files[0], folder)
         return
-    
     context.user_data["pending_files"] = filtered_files
     context.user_data["current_folder"] = folder
     buttons = [[InlineKeyboardButton(f["name"], callback_data=f"filesel:{i}")] for i, f in enumerate(filtered_files)]
     buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"mycourse:{folder}")])
-    await query.message.reply_text(
-        "اختر الملف:",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-
+    await query.message.reply_text("اختر الملف:", reply_markup=InlineKeyboardMarkup(buttons))
 
 async def _send_file_with_options(target, context, file, folder):
-    """Show file with options (download, translate, summarize)."""
     context.user_data["last_file"] = file
     context.user_data["current_folder"] = folder
     buttons = [
@@ -152,9 +124,7 @@ async def _send_file_with_options(target, context, file, folder):
         parse_mode="Markdown",
     )
 
-
 async def handle_course_file_action(update, context):
-    """Handle download, translation, and summary actions for a selected course file."""
     query = update.callback_query
     await query.answer()
     action = query.data.removeprefix("coursefile:")
@@ -173,9 +143,7 @@ async def handle_course_file_action(update, context):
     else:
         await _summarize_file(query.message, file)
 
-
 async def _translate_file(target, file):
-    """Translate a PDF file."""
     try:
         url = await asyncio.to_thread(get_file_download_url_by_path, file["path"])
         response = await asyncio.to_thread(requests.get, url, headers=github_headers(), timeout=60)
@@ -197,9 +165,7 @@ async def _translate_file(target, file):
         logging.exception("Translation failed")
         await target.reply_text("تعذر ترجمة الملف الآن.")
 
-
 async def _summarize_file(target, file):
-    """Summarize a PDF file."""
     try:
         url = await asyncio.to_thread(get_file_download_url_by_path, file["path"])
         response = await asyncio.to_thread(requests.get, url, headers=github_headers(), timeout=60)
@@ -223,21 +189,17 @@ async def _summarize_file(target, file):
         await target.reply_text("تعذر تلخيص الملف الآن.")
 
 async def handle_back_my_courses(update, context):
-    """Handle back button to show my courses again."""
     query = update.callback_query
     await query.answer()
-    
     courses, _ = await _available_courses_for_user(update)
     if not courses:
         await query.edit_message_text("لا توجد مواد مخصصة لك.")
         return
-    
     buttons = []
     for c in courses:
         name = c.get("name", "مادة")
         folder = c.get("folder", "")
         buttons.append([InlineKeyboardButton(f"📚 {name}", callback_data=f"mycourse:{folder}")])
-    
     await query.edit_message_text(
         "📚 **موادّي**\n\nاختر المادة لعرض التفاصيل:",
         reply_markup=InlineKeyboardMarkup(buttons),
@@ -257,11 +219,9 @@ async def _can_access_materials(update):
 async def _available_courses_for_user(update):
     student_id, student = await asyncio.to_thread(get_student_by_chat_id, update.effective_chat.id)
     if student:
-        # Return only courses assigned to this student
         assigned_courses = student.get("courses") or []
         if not assigned_courses:
             return [], student_id
-        # Get full course details for assigned courses
         all_courses = await _all_courses()
         student_courses = [c for c in all_courses if c.get("folder") in assigned_courses]
         return student_courses, student_id
@@ -277,8 +237,6 @@ async def _can_access_folder(update, folder):
     return any(str(course.get("folder", "")) == folder for course in courses)
 
 async def assign_course_to_student(student_id, course_folder):
-    """Assign a course to a student."""
-    from config import db
     from firebase_admin import firestore
     await asyncio.to_thread(
         db.collection("students").document(student_id).update,
@@ -286,8 +244,6 @@ async def assign_course_to_student(student_id, course_folder):
     )
 
 async def remove_course_from_student(student_id, course_folder):
-    """Remove a course from a student."""
-    from config import db
     from firebase_admin import firestore
     await asyncio.to_thread(
         db.collection("students").document(student_id).update,
