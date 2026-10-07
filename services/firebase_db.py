@@ -1,6 +1,64 @@
+"""Firebase/Firestore: الاتصال + دوال قاعدة البيانات."""
+
+import json
+import logging
+import os
 import time
+
+import firebase_admin
+from firebase_admin import credentials, firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from config import db
+
+
+if not firebase_admin._apps:
+    firebase_key_json = os.getenv("FIREBASE_KEY_JSON")
+    if firebase_key_json and firebase_key_json.strip():
+        try:
+            cred = credentials.Certificate(json.loads(firebase_key_json))
+            firebase_admin.initialize_app(cred)
+            logging.info("Firebase initialized from FIREBASE_KEY_JSON env var")
+        except Exception as e:
+            logging.error("Failed to initialize Firebase from env var: %s", e)
+    elif os.path.exists("firebase-key.json"):
+        try:
+            cred = credentials.Certificate("firebase-key.json")
+            firebase_admin.initialize_app(cred)
+            logging.info("Firebase initialized from firebase-key.json file")
+        except Exception as e:
+            logging.error("Failed to initialize Firebase from file: %s", e)
+    else:
+        logging.error("FIREBASE_KEY_JSON env var is empty AND firebase-key.json not found!")
+
+
+class _MissingFirestore:
+    """بديل يمنع انهيار الاستيراد عند غياب بيانات اعتماد Firebase.
+
+    أي محاولة لاستخدامه تُرجع استثناءً واضحاً بدل خطأ غامض عند الاستيراد.
+    """
+
+    def __getattr__(self, name):
+        raise RuntimeError(
+            "Firebase غير مهيّأ: أضف FIREBASE_KEY_JSON في متغيّرات البيئة "
+            "أو ضع ملف firebase-key.json في جذر المشروع."
+        )
+
+
+if firebase_admin._apps:
+    try:
+        db = firestore.client()
+    except Exception:
+        logging.exception("firestore.client() failed")
+        db = None
+else:
+    db = None
+
+if db is None:
+    db = _MissingFirestore()
+
+# ============================================================
+# من الملف الأصلي: database.py
+# ============================================================
+
 
 CACHE_TTL_SECONDS = 300
 _cached_text = {"text": "", "last_updated": 0}

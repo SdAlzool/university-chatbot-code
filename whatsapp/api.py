@@ -1,12 +1,66 @@
-"""WhatsApp API layer — send messages, media handling."""
+"""واتساب: الاتصال بالـ Cloud API + حالة الجلسات."""
 
 import logging
+import threading
+import time
+
 import requests
-from config import WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_API_VERSION
-from github_utils import download_file_bytes
+
+from config import WHATSAPP_API_VERSION, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_TOKEN
+from services.github_tools import download_file_bytes
+
+
+# ============================================================
+# من الملف الأصلي: whatsapp_state.py
+# ============================================================
+
+
+_state_lock = threading.Lock()
+_wa_state = {}
+_STATE_TTL_SECONDS = 24 * 3600
+
+
+def _prune_locked():
+    """يحذف جلسات الواتساب القديمة حتى لا تكبر الذاكرة بلا حد."""
+    now = time.time()
+    stale = [phone for phone, st in _wa_state.items() if now - st.get("touched", 0) > _STATE_TTL_SECONDS]
+    for phone in stale:
+        _wa_state.pop(phone, None)
+
+
+def get_state(phone):
+    with _state_lock:
+        _prune_locked()
+        state = _wa_state.setdefault(phone, {
+            "state": None,
+            "data": {},
+            "last_file": None,
+            "pending_files": [],
+            "welcome_sent": False,
+        })
+        state["touched"] = time.time()
+        return state
+
+
+def reset_state(phone):
+    with _state_lock:
+        old = _wa_state.get(phone, {})
+        _wa_state[phone] = {
+            "state": None,
+            "data": {},
+            "last_file": old.get("last_file"),
+            "pending_files": [],
+            "welcome_sent": old.get("welcome_sent", True),
+            "touched": time.time(),
+        }
+
+
+# ============================================================
+# من الملف الأصلي: whatsapp_api.py
+# ============================================================
+
 
 WA_BASE = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}"
-WA_MSG_URL = f"{WA_BASE}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
 WA_HEADERS = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
 
 _inbound_phone_id = None

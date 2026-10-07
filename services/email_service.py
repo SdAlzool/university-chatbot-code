@@ -1,8 +1,15 @@
-import io
+"""إرسال رمز التحقق (OTP) بالإيميل عبر SendGrid."""
+
 import logging
-from pypdf import PdfReader
+
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail, Email, To, Content
+
+
+# ============================================================
+# من الملف الأصلي: utils.py
+# ============================================================
+
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +50,3 @@ def send_otp_email(to_email, otp_code):
         raise Exception(f"SendGrid API error {response.status_code}: {response.body}")
 
     return response
-
-def extract_pdf_text(pdf_bytes):
-    pdf_file = io.BytesIO(pdf_bytes)
-    reader = PdfReader(pdf_file)
-    full_text = ""
-    for page in reader.pages:
-        extracted = page.extract_text()
-        if extracted:
-            full_text += extracted + "\n"
-    return full_text

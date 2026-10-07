@@ -1,6 +1,8 @@
-"""WhatsApp bot — HTTP server, webhook, and main entry point."""
+"""السيرفر الرئيسي — يشغّل واتساب (webhook) + تيليجرام (polling) + keep-alive.
 
-import asyncio
+التشغيل:  python server.py   (محلي و Render)
+"""
+
 import hashlib
 import hmac
 import json
@@ -12,39 +14,23 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
+
 from config import (
-    WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_VERIFY_TOKEN,
-    WHATSAPP_APP_SECRET, WHATSAPP_API_VERSION, WHATSAPP_PORT,
+    WHATSAPP_API_VERSION,
+    WHATSAPP_APP_SECRET,
+    WHATSAPP_PHONE_NUMBER_ID,
+    WHATSAPP_PORT,
+    WHATSAPP_TOKEN,
+    WHATSAPP_VERIFY_TOKEN,
 )
-from whatsapp_api import set_inbound_phone_id
-from whatsapp_handlers import process_wa_message
+
+# Render URL for keep-alive (يجب أن يأتي من بيئة التشغيل حتى لا ندقّ على رابط خدمة أخرى)
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "").strip()
 
 
-def _handle_webhook_payload(payload):
-    try:
-        for entry in payload.get("entry", []):
-            for change in entry.get("changes", []):
-                value = change.get("value") or {}
-                metadata = value.get("metadata") or {}
-                inbound_phone_id = metadata.get("phone_number_id")
-                if inbound_phone_id and inbound_phone_id != WHATSAPP_PHONE_NUMBER_ID:
-                    logging.warning("Ignoring webhook for unexpected phone_number_id=%s", inbound_phone_id)
-                    continue
-                for msg in value.get("messages", []):
-                    phone = msg.get("from")
-                    if not phone:
-                        continue
-                    logging.info("WA message from %s type=%s", phone, msg.get("type"))
-                    try:
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        loop.run_until_complete(process_wa_message(phone, msg))
-                        loop.close()
-                    except Exception:
-                        logging.exception("Failed to process WA message from %s", phone)
-    except Exception:
-        logging.exception("Webhook processing failed")
-
+# ============================================================
+# HTTP: health check + WhatsApp webhook
+# ============================================================
 
 class WAHandler(BaseHTTPRequestHandler):
     webhook_path = os.environ.get("WHATSAPP_WEBHOOK_PATH", "/webhook")
@@ -100,6 +86,8 @@ class WAHandler(BaseHTTPRequestHandler):
                 pass
 
     def do_POST(self):
+        from whatsapp.bot import handle_webhook_payload
+
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path != self.webhook_path:
             self._send(404, "Not Found")
@@ -128,21 +116,11 @@ class WAHandler(BaseHTTPRequestHandler):
             return
         logging.info("WA POST %s (entry=%d)", self.path, len(payload.get("entry", [])))
         self._send(200, "OK")
-        threading.Thread(target=_handle_webhook_payload, args=(payload,), daemon=True).start()
+        threading.Thread(target=handle_webhook_payload, args=(payload,), daemon=True).start()
 
 
-def _keep_alive():
-    while True:
-        time.sleep(600)
-        try:
-            url = os.environ.get("RENDER_EXTERNAL_URL", "http://127.0.0.1:8445")
-            requests.get(f"{url}/health", timeout=10)
-            logging.info("Keep-alive ping sent")
-        except Exception:
-            logging.warning("Keep-alive ping failed")
-
-
-def main():
+def run_whatsapp_server():
+    """يشغّل سيرفر الـwebhook (يقفل الـthread لحد ما يتوقف)."""
     missing = [name for name, value in (
         ("WHATSAPP_TOKEN", WHATSAPP_TOKEN),
         ("WHATSAPP_PHONE_NUMBER_ID", WHATSAPP_PHONE_NUMBER_ID),
@@ -150,8 +128,10 @@ def main():
         ("WHATSAPP_APP_SECRET", WHATSAPP_APP_SECRET),
     ) if not value]
     if missing:
-        logging.error("ناقص في Environment Variables: %s", ", ".join(missing))
-        return
+        # لا نتوقف: يجب أن يعمل السيرفر حتى ينجح health check على Render.
+        # رسائل الواتساب نفسها سترفض بـ 503 حتى تُضبط المتغيّرات.
+        logging.error("ناقص في Environment Variables: %s — سيتم تشغيل السيرفر بدون معالجة رسائل الواتساب",
+                      ", ".join(missing))
 
     logging.info("WA Config: PHONE_ID=%s API_VERSION=%s",
                  WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_API_VERSION)
@@ -169,7 +149,7 @@ def main():
                      "SET" if WHATSAPP_TOKEN else "MISSING",
                      "SET" if WHATSAPP_PHONE_NUMBER_ID else "MISSING",
                      "SET" if WHATSAPP_VERIFY_TOKEN else "MISSING",
-                 "SET" if WHATSAPP_APP_SECRET else "MISSING",
+                     "SET" if WHATSAPP_APP_SECRET else "MISSING",
                      WHATSAPP_API_VERSION or "MISSING")
         if os.environ.get("RENDER"):
             logging.info("Running on Render.")
@@ -180,7 +160,6 @@ def main():
             logging.info("Local WhatsApp webhook port: %s", port)
             logging.info("Local ngrok command: ngrok http %s", port)
 
-        threading.Thread(target=_keep_alive, daemon=True).start()
         server.serve_forever()
     except OSError as e:
         logging.exception("Could not start WhatsApp webhook on port %s: %s", port, e)
@@ -193,6 +172,76 @@ def main():
                 server.server_close()
             except Exception:
                 pass
+
+
+# ============================================================
+# Keep-alive + تشغيل كل الخدمات
+# ============================================================
+
+def _run_thread(target, name):
+    try:
+        target()
+    except Exception:
+        logging.exception("%s thread crashed", name)
+
+
+def keep_alive():
+    """Keep the server awake by pinging every 5 minutes."""
+    while True:
+        try:
+            time.sleep(300)  # 5 minutes (before 15 min sleep timeout)
+            response = requests.get(RENDER_URL, timeout=30)
+            if response.status_code == 200:
+                logging.info("✅ Keep-alive: Server is awake (status %d)", response.status_code)
+            else:
+                logging.warning("⚠️ Keep-alive: Unexpected status %d", response.status_code)
+        except requests.exceptions.Timeout:
+            logging.warning("⚠️ Keep-alive: Request timed out")
+        except Exception as e:
+            logging.error("❌ Keep-alive failed: %s", e)
+
+
+def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s"
+    )
+
+    logging.info("Starting all services...")
+    logging.info("Render URL: %s", RENDER_URL)
+
+    # Start keep-alive thread (only on Render when RENDER_EXTERNAL_URL is known)
+    if os.getenv("RENDER") and RENDER_URL:
+        threading.Thread(target=keep_alive, name="keep-alive", daemon=True).start()
+        logging.info("🔄 Keep-alive thread started (every 5 min)")
+    elif os.getenv("RENDER"):
+        logging.warning("RENDER_EXTERNAL_URL غير مضبوط — تم تعطيل Keep-alive")
+    else:
+        logging.info("🏠 Running locally - keep-alive disabled")
+
+    # Preload knowledge base
+    try:
+        from services.firebase_db import get_knowledge_base_text
+        kb = get_knowledge_base_text()
+        logging.info("KB loaded: %s chars", len(kb))
+    except Exception as e:
+        logging.warning("KB preload failed: %s", e)
+
+    # WhatsApp webhook — نبدأه أولاً حتى يبقى سيرفر الـHTTP شغّالاً
+    # (مهم على Render حتى لا يفشل health check لو تعذّر تشغيل تيليجرام).
+    threading.Thread(
+        target=_run_thread,
+        args=(run_whatsapp_server, "whatsapp"),
+        name="whatsapp",
+        daemon=False,
+    ).start()
+
+    # Telegram runs in the main thread
+    try:
+        from telegram_bot.bot import main as run_telegram
+        run_telegram()
+    except Exception:
+        logging.exception("telegram crashed")
 
 
 if __name__ == "__main__":

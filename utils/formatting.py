@@ -1,4 +1,12 @@
-"""Simple message formatting."""
+"""تنسيق رسائل البوت (قوائم الترحيب والمساعدة)."""
+
+
+
+
+# ============================================================
+# من الملف الأصلي: formatting.py
+# ============================================================
+
 
 def header(text):
     return f"━━━━━━━━━━━━━━━━━━━━\n{text}\n━━━━━━━━━━━━━━━━━━━━"
@@ -74,7 +82,7 @@ def instructor_welcome_menu():
 
 def my_courses_list(courses):
     if not courses:
-        return f"{header("📚 موادي")}\n\n{info("لا توجد مواد مسجلة لك")}"
+        return header("📚 موادي") + "\n\n" + info("لا توجد مواد مسجلة لك")
     lines = [header("📚 موادي"), ""]
     for i, course in enumerate(courses, 1):
         lines.append(numbered(i, course.get("name", "مادة")))

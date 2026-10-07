@@ -1,35 +1,67 @@
+"""تيليجرام: تسجيل الـhandlers وتشغيل الـpolling."""
+
 import logging
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, filters,
-    CallbackQueryHandler
-)
+
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+
 from config import TOKEN
-from handlers.admin import (
-    show_my_id, admin_dashboard, list_admins, add_admin, remove_admin,
-    list_students, list_instructors, list_all_people, add_student, add_instructor,
-    edit_student, edit_instructor,
-    delete_student, delete_instructor, handle_person_button, handle_person_delete,
+from telegram_bot.admin_panel import (
+    _admin_callback,
+    add_admin,
+    add_instructor,
+    add_student,
+    admin_dashboard,
+    admin_panel,
+    delete_instructor,
+    delete_student,
+    edit_instructor,
+    edit_student,
+    handle_person_button,
+    handle_person_delete,
+    list_admins,
+    list_all_people,
+    list_instructors,
+    list_students,
+    remove_admin,
+    show_my_id,
 )
-from handlers.auth import (
-    login_conv, logout, handle_student_callback, handle_instructor_callback, handle_ask_course
+from telegram_bot.handlers import (
+    addcontent_conv,
+    deletecontent_start,
+    get_sheet,
+    handle_ask_course,
+    handle_back_my_courses,
+    handle_course_file_action,
+    handle_course_option,
+    handle_delcourse_button,
+    handle_delfile_button,
+    handle_delmenu_button,
+    handle_delwhole_confirm,
+    handle_delwhole_select,
+    handle_document,
+    handle_file_action,
+    handle_file_button,
+    handle_instructor_callback,
+    handle_message,
+    handle_my_course_button,
+    handle_photo,
+    handle_sheet_button,
+    handle_student_callback,
+    handle_voice,
+    handle_welcome_buttons,
+    help_command,
+    login_conv,
+    logout,
+    show_courses,
+    show_my_courses,
+    start,
+    summarize_last_file,
 )
-from handlers.courses import (
-    show_courses, get_sheet, summarize_last_file,
-    handle_sheet_button, handle_file_button, handle_course_file_action,
-    show_my_courses, handle_my_course_button, handle_course_option, handle_back_my_courses
-)
-from handlers.content_mgmt import (
-    addcontent_conv, deletecontent_start, handle_delmenu_button,
-    handle_delwhole_select, handle_delwhole_confirm,
-    handle_delcourse_button, handle_delfile_button
-)
-from handlers.general import (
-    start, help_command, handle_welcome_buttons, handle_voice, handle_message
-)
-from handlers.file_tools import (
-    handle_document, handle_photo, handle_file_action
-)
-from handlers.admin_panel import admin_panel, _admin_callback
+
+
+# ============================================================
+# من الملف الأصلي: main.py
+# ============================================================
 
 
 async def _on_error(update, context):

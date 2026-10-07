@@ -1,11 +1,39 @@
+"""Gemini: العميل + الاستدعاء مع إعادة المحاولة + النية + الردّ الاحتياطي."""
+
 import asyncio
 import logging
 import math
 import re
 import time
+
+from google import genai
 from google.genai import types
-from config import client, FAST_MODEL, MODEL_NAME, INTENT_MODEL_NAME
-from database import get_knowledge_base_text, get_student_by_chat_id, get_chat_language
+
+from config import FAST_MODEL, GEMINI_KEY, INTENT_MODEL_NAME, MODEL_NAME
+from services.firebase_db import get_chat_language, get_knowledge_base_text, get_student_by_chat_id
+
+
+class _MissingGeminiClient:
+    """يمنع انهيار الاستيراد عند غياب GEMINI_API_KEY مع رسالة خطأ واضحة."""
+
+    def __getattr__(self, name):
+        raise RuntimeError("GEMINI_API_KEY غير مضبوط: أضفه في متغيّرات البيئة.")
+
+
+client = None
+if GEMINI_KEY and GEMINI_KEY.strip():
+    try:
+        client = genai.Client(api_key=GEMINI_KEY)
+    except Exception:
+        logging.exception("Gemini client init failed")
+        client = None
+if client is None:
+    client = _MissingGeminiClient()
+
+# ============================================================
+# من الملف الأصلي: gemini_services.py
+# ============================================================
+
 
 _fast_cooldown_until = 0.0
 _quota_cooldown_until = 0.0

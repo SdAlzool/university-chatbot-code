@@ -1,8 +1,17 @@
-import os
+"""أدوات GitHub: رفع/حذف/تنزيل ملفات المواد."""
+
 import base64
-import requests
 from pathlib import PurePosixPath
-from config import GITHUB_TOKEN, GITHUB_REPO
+
+import requests
+
+from config import GITHUB_REPO, GITHUB_TOKEN
+
+
+# ============================================================
+# من الملف الأصلي: github_utils.py
+# ============================================================
+
 
 def github_headers():
     return {
@@ -24,12 +33,6 @@ def list_repository_folders():
 def slugify_course_name(name):
     cleaned = name.strip().replace("/", "-").replace("\\", "-")
     return "-".join(cleaned.split())
-
-def slugify_file_stem(file_name):
-    base, _ = os.path.splitext(file_name)
-    cleaned = base.strip().replace("/", "-").replace("\\", "-")
-    cleaned = "-".join(cleaned.split())
-    return cleaned or "file"
 
 def list_course_files_with_sha(course_folder):
     if not course_folder or not course_folder.strip():

@@ -1,10 +1,17 @@
-"""Interactive Admin Panel — WhatsApp (List Message + Interactive Buttons)."""
+"""لوحة تحكم الأدمن في واتساب."""
 
 import logging
-from whatsapp_api import send_text, send_list, send_buttons
-from whatsapp_state import get_state, reset_state
-from config import db
-from handlers.admin import is_stored_admin
+
+from config import ADMIN_WHATSAPP_NUMBERS
+from services.firebase_db import db
+from services.github_tools import slugify_course_name
+from telegram_bot.admin_panel import is_stored_admin
+from whatsapp.api import get_state, reset_state, send_buttons, send_list, send_text
+
+
+# ============================================================
+# من الملف الأصلي: handlers/wa_admin_panel.py
+# ============================================================
 
 
 # ============================================================
@@ -128,7 +135,7 @@ def wa_admin_list(phone, section):
         docs = []
 
     if not docs:
-        send_text(phone, f"📋 لا يوجد {label} مسجلين.\n\n回到 القائمة الرئيسية.")
+        send_text(phone, f"📋 لا يوجد {label} مسجلين.\n\nاكتب «قائمة» للعودة إلى القائمة الرئيسية.")
         return
 
     lines = [f"📋 قائمة {label} ({len(docs)}):\n"]
@@ -219,7 +226,10 @@ def wa_admin_add_execute(phone, section, text):
 
         elif section == "courses":
             name = text.strip()
-            folder = name.replace(" ", "-").lower()
+            folder = slugify_course_name(name)
+            if not folder:
+                send_text(phone, "❌ اسم المادة غير صالح.")
+                return
             db.collection(coll).document(folder).set({
                 "name": name, "folder": folder,
                 "created_by": f"wa:{phone}",
@@ -232,8 +242,8 @@ def wa_admin_add_execute(phone, section, text):
     except Exception as e:
         logging.exception("WA admin add failed")
         send_text(phone, f"❌ فشلت الإضافة: {e}")
-
-    reset_state(phone)
+    finally:
+        reset_state(phone)
 
 
 # ============================================================
@@ -323,6 +333,9 @@ def wa_admin_callback(phone, payload):
     """
     if not payload.startswith("waadm:"):
         return False
+    if phone not in ADMIN_WHATSAPP_NUMBERS and not is_stored_admin(phone):
+        logging.warning("Unauthorized WhatsApp admin callback from %s", phone)
+        return True
 
     parts = payload.split(":")
     action = parts[1] if len(parts) > 1 else ""

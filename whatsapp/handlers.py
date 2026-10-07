@@ -1,4 +1,5 @@
-"""WhatsApp bot handlers — simplified version."""
+"""منطق الأوامر والردود في واتساب."""
+
 import asyncio
 import logging
 import secrets
@@ -8,28 +9,54 @@ from types import SimpleNamespace
 from firebase_admin import firestore
 from google.genai import types
 
-from config import client, db, MODEL_NAME, ADMIN_WHATSAPP_NUMBERS
-from database import (
-    get_student_by_chat_id, get_instructor_by_chat_id,
-    set_chat_language, was_welcome_sent, mark_welcome_sent,
-    save_pending_upload, get_pending_upload, clear_pending_upload,
+from config import ADMIN_WHATSAPP_NUMBERS, MODEL_NAME
+from services.email_service import send_otp_email
+from services.firebase_db import (
+    clear_pending_upload,
+    db,
+    get_instructor_by_chat_id,
+    get_pending_upload,
+    get_student_by_chat_id,
+    mark_welcome_sent,
+    save_pending_upload,
+    set_chat_language,
+    was_welcome_sent,
 )
-from gemini_services import (
-    call_gemini_with_retry, detect_user_intent,
-    generate_answer, parse_language_toggle, get_effective_language,
+from services.gemini_service import (
+    call_gemini_with_retry,
+    client,
+    detect_user_intent,
+    generate_answer,
+    get_effective_language,
+    parse_language_toggle,
 )
-from github_utils import download_file_bytes, list_course_files_with_sha, github_upload_file, github_delete_file, slugify_course_name
-from utils import send_otp_email, extract_pdf_text
-from handlers.admin import is_stored_admin
-from handlers.courses import _all_courses
-from handlers.general import _handle_admin_command
-from handlers.wa_admin_panel import wa_admin_callback, wa_admin_menu, wa_admin_add_execute
+from services.github_tools import (
+    download_file_bytes,
+    github_delete_file,
+    github_upload_file,
+    list_course_files_with_sha,
+    slugify_course_name,
+)
+from telegram_bot.admin_panel import is_stored_admin
+from telegram_bot.handlers import _all_courses, _handle_admin_command
+from utils.pdf_utils import extract_pdf_text
+from whatsapp.admin_panel import wa_admin_add_execute, wa_admin_callback, wa_admin_menu
+from whatsapp.api import (
+    _guess_mime,
+    download_media,
+    get_state,
+    reset_state,
+    send_buttons,
+    send_file_from_github,
+    send_list,
+    send_text,
+    upload_media,
+)
 
-from whatsapp_api import (
-    send_text, send_buttons, send_list, upload_media,
-    download_media, send_file_from_github, _guess_mime, set_inbound_phone_id,
-)
-from whatsapp_state import get_state, reset_state
+
+# ============================================================
+# من الملف الأصلي: whatsapp_handlers.py
+# ============================================================
 
 
 def wa_is_admin(phone):
@@ -101,12 +128,59 @@ async def wa_menu_action(phone, action):
         send_text(phone, "أرسل الملف الآن، وسأسألك: تلخيص أم ترجمة؟")
     elif action == "admin":
         instructor_id, _ = await asyncio.to_thread(get_instructor_by_chat_id, "wa:" + phone)
-        if wa_is_admin(phone):
+        if await asyncio.to_thread(wa_is_admin, phone):
             wa_admin_menu(phone)
         elif instructor_id:
             send_buttons(phone, "اختر:", [("admin:add", "إضافة محتوى"), ("admin:delete", "حذف محتوى")])
         else:
             send_text(phone, "هذه الخدمة لأعضاء هيئة التدريس أو الأدمن فقط.")
+
+
+async def wa_welcome_menu_action(phone, action):
+    """خيارات قوائم الترحيب (بعد تسجيل الدخول) في واتساب."""
+    if action == "ask":
+        send_text(phone, "اكتب سؤالك عن الجامعة مباشرة وسأجيبك.")
+        return
+    if action == "course":
+        courses = await _wa_available_courses(phone)
+        if not courses:
+            send_text(phone, "لا توجد مواد متاحة لك.")
+            return
+        items = [
+            (f"askcourse:{c.get('folder', '')}", (c.get("name") or "مادة")[:24], (c.get("folder") or "")[:72])
+            for c in courses[:100]
+        ]
+        send_list(phone, "اختر المادة لسؤالك:", items, header="المواد")
+        return
+    if action == "my":
+        await wa_show_my_courses(phone)
+        return
+    if action == "courses":
+        await wa_show_courses(phone)
+        return
+    if action == "add":
+        wa_add_content_start(phone, False)
+        return
+    if action == "del":
+        await wa_delete_start(phone)
+        return
+    wa_show_main_menu(phone)
+
+
+async def wa_ask_course_selected(phone, folder):
+    if not await _wa_can_access_folder(phone, folder):
+        send_text(phone, "ليس لديك صلاحية الوصول إلى هذا المقرر.")
+        return
+    courses = await _all_courses()
+    name = folder
+    for c in courses:
+        if c.get("folder") == folder:
+            name = c.get("name") or folder
+            break
+    state = get_state(phone)
+    state["state"] = "ASK_COURSE"
+    state["data"]["ask_course_name"] = name
+    send_text(phone, f"اكتب سؤالك عن مادة {name}:")
 
 
 # ============================================================
@@ -177,12 +251,22 @@ async def handle_login_otp(phone, otp):
     )
     reset_state(phone)
     send_text(phone, "تم تسجيل الدخول بنجاح ✅")
+    state = get_state(phone)
+    state["menu_shown_at"] = time.time()
     if pending["role"] == "student":
-        from formatting import student_welcome_menu
-        send_text(phone, student_welcome_menu())
+        from utils.formatting import student_welcome_menu
+        send_buttons(phone, student_welcome_menu().strip(), [
+            ("wmenu:ask", "❓ سؤال عن الجامعة"),
+            ("wmenu:course", "📚 سؤال عن مادة"),
+            ("wmenu:my", "📖 موادي"),
+        ])
     else:
-        from formatting import instructor_welcome_menu
-        send_text(phone, instructor_welcome_menu())
+        from utils.formatting import instructor_welcome_menu
+        send_buttons(phone, instructor_welcome_menu().strip(), [
+            ("wmenu:courses", "📚 عرض المواد"),
+            ("wmenu:add", "➕ إضافة مادة"),
+            ("wmenu:del", "🗑️ حذف مادة"),
+        ])
 
 
 def wa_logout(phone):
@@ -211,7 +295,7 @@ async def _wa_available_courses(phone):
             return []
         all_courses = await _all_courses()
         return [c for c in all_courses if c.get("folder") in assigned_courses]
-    if wa_is_admin(phone):
+    if await asyncio.to_thread(wa_is_admin, phone):
         return await _all_courses()
     return []
 
@@ -497,7 +581,7 @@ async def wa_del_select_file(phone, action):
         send_text(phone, "قائمة منتهية الصلاحية. ابدأ من جديد.")
         reset_state(phone)
         return
-    send_buttons(phone, f"حذف {file['name']}？",
+    send_buttons(phone, f"حذف {file['name']}؟",
                  [("delfileconfirm:yes", "نعم احذف"), ("delfileconfirm:no", "إلغاء")])
     state["data"]["del_file_index"] = index
     state["state"] = "DEL_FILE_CONFIRM"
@@ -530,8 +614,24 @@ async def wa_del_whole_confirm(phone, action):
     if not folder:
         reset_state(phone)
         return
-    files = await asyncio.to_thread(list_course_files_with_sha, folder) or []
-    ok = all(await asyncio.to_thread(github_delete_file, f["path"], f["sha"], f"delete {f['name']}") for f in files)
+    files = await asyncio.to_thread(list_course_files_with_sha, folder)
+    if files is None:
+        # خطأ في الاتصال بخزن الملفات — لا نحذف مسجّل المادة حتى لا نفقد البيانات.
+        send_text(phone, "تعذر الوصول إلى خزن ملفات المادة؛ لم يتم الحذف.")
+        reset_state(phone)
+        return
+    results = []
+    for f in files:
+        try:
+            results.append(
+                await asyncio.to_thread(
+                    github_delete_file, f["path"], f["sha"], f"delete {f['name']}"
+                )
+            )
+        except Exception:
+            logging.exception("Delete file failed for %s", f.get("path"))
+            results.append(False)
+    ok = all(results)
     if ok:
         await asyncio.to_thread(db.collection("courses").document(folder).delete)
         send_text(phone, "تم حذف المادة وكل الشيتات ✅")
@@ -573,13 +673,13 @@ async def wa_process_upload(phone, action):
         result_text = (response.text or "").strip()[:4000]
         if action.endswith("_pdf"):
             try:
-                from pdf_utils import text_to_pdf_bytes
+                from utils.pdf_utils import text_to_pdf_bytes
                 title = "ترجمة الملف" if base_action == "translate" else "ملخص الملف"
                 pdf_buf = await asyncio.to_thread(text_to_pdf_bytes, result_text, title)
                 pdf_bytes = pdf_buf.read() if hasattr(pdf_buf, "read") else pdf_buf
                 media_id = await asyncio.to_thread(upload_media, pdf_bytes, "application/pdf", f"{title}.pdf")
                 if media_id:
-                    from whatsapp_api import send_document
+                    from whatsapp.api import send_document
                     send_document(phone, media_id, f"{title}.pdf")
                 else:
                     send_text(phone, result_text)
@@ -626,7 +726,7 @@ async def handle_voice(phone, media_id):
 
 async def handle_callback(phone, payload):
     if payload.startswith("waadm:"):
-        if wa_admin_callback(phone, payload):
+        if await asyncio.to_thread(wa_admin_callback, phone, payload):
             return
     if payload == "login":
         start_login(phone)
@@ -636,6 +736,23 @@ async def handle_callback(phone, payload):
         return
     if payload.startswith("menu:"):
         await wa_menu_action(phone, payload.removeprefix("menu:"))
+        return
+    if payload in ("admin:add", "admin:delete"):
+        instructor_id, _ = await asyncio.to_thread(get_instructor_by_chat_id, "wa:" + phone)
+        is_admin = await asyncio.to_thread(wa_is_admin, phone)
+        if not (instructor_id or is_admin):
+            send_text(phone, "هذه الخدمة لأعضاء هيئة التدريس أو الأدمن فقط.")
+            return
+        if payload == "admin:add":
+            wa_add_content_start(phone, bool(is_admin and not instructor_id))
+        else:
+            await wa_delete_start(phone)
+        return
+    if payload.startswith("wmenu:"):
+        await wa_welcome_menu_action(phone, payload.removeprefix("wmenu:"))
+        return
+    if payload.startswith("askcourse:"):
+        await wa_ask_course_selected(phone, payload.removeprefix("askcourse:"))
         return
     if payload.startswith("sheet:"):
         await wa_sheets_for(phone, payload.removeprefix("sheet:"))
@@ -685,7 +802,7 @@ async def handle_callback(phone, payload):
         return
 
 
-async def route_text(phone, text):
+async def route_text(phone, text, course_context=None):
     lang_cmd = parse_language_toggle(text)
     if lang_cmd:
         if lang_cmd == "show":
@@ -700,7 +817,7 @@ async def route_text(phone, text):
 
     _, student = await asyncio.to_thread(get_student_by_chat_id, "wa:" + phone)
     instructor_id, instructor = await asyncio.to_thread(get_instructor_by_chat_id, "wa:" + phone)
-    is_admin = wa_is_admin(phone)
+    is_admin = await asyncio.to_thread(wa_is_admin, phone)
 
     if text.strip().lower() in ("قائمة", "menu", "مساعدة", "help", "الخدمات"):
         wa_show_main_menu(phone)
@@ -709,37 +826,48 @@ async def route_text(phone, text):
         await wa_show_my_courses(phone)
         return
 
+    # قوائم الترحيب المرقّمة (1 / 2 / 3) — تعمل فقط بعد إرسال القائمة فعلياً.
+    state = get_state(phone)
+    choice = text.strip()
+    if choice in ("1", "2", "3") and time.time() - state.get("menu_shown_at", 0) < 3600:
+        if instructor_id or (is_admin and not student):
+            await wa_welcome_menu_action(phone, {"1": "courses", "2": "add", "3": "del"}[choice])
+            return
+        if student:
+            await wa_welcome_menu_action(phone, {"1": "ask", "2": "course", "3": "my"}[choice])
+            return
+
     if is_admin:
         t = text.strip().lower()
         if any(w in t for w in ("إدارة المحتوى", "لوحة الإدارة", "لوحة الادارة", "الأدمن", "الادمنية", "admin panel", "admin")):
             wa_admin_menu(phone)
             return
         if any(w in t for w in ("إضافة طالب", "اضافة طالب", "add student")):
-            from handlers.wa_admin_panel import wa_admin_add_prompt
+            from whatsapp.admin_panel import wa_admin_add_prompt
             wa_admin_add_prompt(phone, "students")
             return
         if any(w in t for w in ("إضافة دكتور", "اضافة دكتور", "add instructor", "addinstructor")):
-            from handlers.wa_admin_panel import wa_admin_add_prompt
+            from whatsapp.admin_panel import wa_admin_add_prompt
             wa_admin_add_prompt(phone, "instructors")
             return
         if any(w in t for w in ("إضافة مشرف", "اضافة مشرف", "add admin")):
-            from handlers.wa_admin_panel import wa_admin_add_prompt
+            from whatsapp.admin_panel import wa_admin_add_prompt
             wa_admin_add_prompt(phone, "admins")
             return
         if any(w in t for w in ("عرض الطلاب", "قائمة الطلاب", "list students")):
-            from handlers.wa_admin_panel import wa_admin_list
+            from whatsapp.admin_panel import wa_admin_list
             wa_admin_list(phone, "students")
             return
         if any(w in t for w in ("عرض الأساتذة", "عرض الاساتذة", "قائمة الأساتذة", "list instructors")):
-            from handlers.wa_admin_panel import wa_admin_list
+            from whatsapp.admin_panel import wa_admin_list
             wa_admin_list(phone, "instructors")
             return
         if any(w in t for w in ("حذف طالب", "delete student")):
-            from handlers.wa_admin_panel import wa_admin_del_list
+            from whatsapp.admin_panel import wa_admin_del_list
             wa_admin_del_list(phone, "students")
             return
         if any(w in t for w in ("حذف دكتور", "delete instructor")):
-            from handlers.wa_admin_panel import wa_admin_del_list
+            from whatsapp.admin_panel import wa_admin_del_list
             wa_admin_del_list(phone, "instructors")
             return
 
@@ -795,7 +923,8 @@ async def route_text(phone, text):
         return
 
     language = get_effective_language("wa:" + phone, text)
-    answer = await generate_answer(text, "wa:" + phone, instructor_data=instructor, language=language)
+    prompt = text if not course_context else f"سؤال الطالب عن مادة «{course_context}»:\n{text}"
+    answer = await generate_answer(prompt, "wa:" + phone, instructor_data=instructor, language=language)
     send_text(phone, answer)
 
 
@@ -871,6 +1000,11 @@ async def process_wa_message(phone, msg):
         return
     if current == "LOGIN_ASK_OTP":
         await handle_login_otp(phone, text)
+        return
+    if current == "ASK_COURSE":
+        course_name = (state.get("data") or {}).get("ask_course_name") or ""
+        reset_state(phone)
+        await route_text(phone, text, course_context=course_name)
         return
     if current == "ADD_NEW_NAME":
         await wa_add_new_name(phone, text)

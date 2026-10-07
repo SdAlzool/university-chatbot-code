@@ -1,11 +1,8 @@
+"""الإعدادات والمفاتيح: كل متغيرات البيئة (.env) في مكان واحد."""
 import os
-import json
 import logging
 import warnings
 from dotenv import load_dotenv
-from google import genai
-import firebase_admin
-from firebase_admin import credentials, firestore
 from telegram.warnings import PTBUserWarning
 
 warnings.filterwarnings("ignore", message=r".*CallbackQueryHandler", category=PTBUserWarning)
@@ -45,28 +42,6 @@ FAST_MODEL = os.getenv("FAST_MODEL", "gemini-3.6-flash")
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 INTENT_MODEL_NAME = os.getenv("INTENT_MODEL", "gemini-3.5-flash-lite")
 
-client = genai.Client(api_key=GEMINI_KEY)
-
-if not firebase_admin._apps:
-    firebase_key_json = os.getenv("FIREBASE_KEY_JSON")
-    if firebase_key_json and firebase_key_json.strip():
-        try:
-            cred = credentials.Certificate(json.loads(firebase_key_json))
-            firebase_admin.initialize_app(cred)
-            logging.info("Firebase initialized from FIREBASE_KEY_JSON env var")
-        except Exception as e:
-            logging.error("Failed to initialize Firebase from env var: %s", e)
-    elif os.path.exists("firebase-key.json"):
-        try:
-            cred = credentials.Certificate("firebase-key.json")
-            firebase_admin.initialize_app(cred)
-            logging.info("Firebase initialized from firebase-key.json file")
-        except Exception as e:
-            logging.error("Failed to initialize Firebase from file: %s", e)
-    else:
-        logging.error("FIREBASE_KEY_JSON env var is empty AND firebase-key.json not found!")
-
-db = firestore.client()
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",

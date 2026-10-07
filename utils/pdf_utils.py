@@ -1,46 +1,33 @@
-# pdf_utils.py
+"""توليد PDF (عربي RTL) + استخراج النص من PDF."""
 
-"""
-PDF generation utilities for University Chatbot.
-
-Supports:
-- Arabic RTL text
-- English text
-- Mixed Arabic / English / numbers
-- Headings
-- Bullet lists
-- Numbered lists
-- Markdown-style formatting
-- Automatic page splitting
-- Arabic fonts
-- Returning PDF as bytes for Telegram / WhatsApp
-"""
-
+import io
 import os
 import re
 import tempfile
 from xml.sax.saxutils import escape
 
+from pypdf import PdfReader
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_RIGHT, TA_CENTER
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import (
-    SimpleDocTemplate,
-    Paragraph,
-    Spacer,
-)
-
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+
+
+# ============================================================
+# من الملف الأصلي: pdf_utils.py
+# ============================================================
+# pdf_utils.py
 
 
 # ============================================================
 # PATHS
 # ============================================================
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # جذر المشروع (فيه مجلد fonts)
 FONT_DIR = os.path.join(BASE_DIR, "fonts")
 
 REGULAR_FONT = "NotoSansArabic"
@@ -67,6 +54,13 @@ def _register_fonts():
     """
 
     registered_fonts = pdfmetrics.getRegisteredFontNames()
+
+    missing = [
+        path for path in (REGULAR_FONT_PATH, BOLD_FONT_PATH)
+        if not os.path.exists(path)
+    ]
+    if missing:
+        print(f"[PDF] Missing Arabic font file(s): {', '.join(missing)} — سيُستبدل بخط Helvetica")
 
     try:
         if (
@@ -469,7 +463,7 @@ def _create_styles():
 
         parent=base_styles["BodyText"],
 
-        fontName=bold_font,
+        fontName=regular_font,
 
         fontSize=11,
 
@@ -497,7 +491,7 @@ def _create_styles():
 
         parent=base_styles["BodyText"],
 
-        fontName=bold_font,
+        fontName=regular_font,
 
         fontSize=11,
 
@@ -525,7 +519,7 @@ def _create_styles():
 
         parent=base_styles["BodyText"],
 
-        fontName=bold_font,
+        fontName=regular_font,
 
         fontSize=11,
 
@@ -553,7 +547,7 @@ def _create_styles():
 
         parent=base_styles["BodyText"],
 
-        fontName=bold_font,
+        fontName=regular_font,
 
         fontSize=10.5,
 
@@ -1015,3 +1009,18 @@ def text_to_pdf(
 
         title=title,
     )
+
+# ============================================================
+# من الملف الأصلي: utils.py
+# ============================================================
+
+
+def extract_pdf_text(pdf_bytes):
+    pdf_file = io.BytesIO(pdf_bytes)
+    reader = PdfReader(pdf_file)
+    full_text = ""
+    for page in reader.pages:
+        extracted = page.extract_text()
+        if extracted:
+            full_text += extracted + "\n"
+    return full_text
