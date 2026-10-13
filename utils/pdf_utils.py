@@ -30,17 +30,20 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # جذر المشروع (فيه مجلد fonts)
 FONT_DIR = os.path.join(BASE_DIR, "fonts")
 
-REGULAR_FONT = "NotoSansArabic"
-BOLD_FONT = "NotoSansArabic-Bold"
+# IBM Plex Sans Arabic يغطي العربي + اللاتيني + الترقيم معاً.
+# (كان NotoSansArabic خط "مبتذّر" عربي فقط: صفر حروف لاتينية،
+#  فأي سطر يخلط عربي + إنجليزي كان يطلع مربعات سوداء.)
+REGULAR_FONT = "IBMPlexSansArabic"
+BOLD_FONT = "IBMPlexSansArabic-Bold"
 
 REGULAR_FONT_PATH = os.path.join(
     FONT_DIR,
-    "NotoSansArabic-Regular.ttf"
+    "IBMPlexSansArabic-Regular.ttf"
 )
 
 BOLD_FONT_PATH = os.path.join(
     FONT_DIR,
-    "NotoSansArabic-Bold.ttf"
+    "IBMPlexSansArabic-Bold.ttf"
 )
 
 
@@ -129,12 +132,211 @@ def _prepare_rtl(text):
 
         return get_display(reshaped, base_dir="R")
 
-    except Exception:
+    except Exception as e:
+        # نسجل السبب بدل ما نصمت — كانت الأخطاء تخفي نفسها
+        # وتسبب نص عربي غير مُشكّل.
+        print(f"[PDF] RTL reshape failed: {type(e).__name__}: {e}")
         return text
 
 
 def _has_arabic(text):
     return bool(re.search(r"[\u0600-\u06ff]", text or ""))
+
+
+# ============================================================
+# GLYPH COVERAGE / SANITIZING
+# ============================================================
+
+# محارف شائعة في مخرجات Gemini غير متوفرة في الخط ->
+# نستبدلها ببديل متوفر بدل ما تطلع مربع أسود.
+# ملاحظة: الإيموجي فوق U+FFFF مفتاحه \U (8 خانات) وليس \u (4 خانات).
+_CHAR_MAP = {
+    # اقتباسات
+    "\u275d": "\u00ab",    # ❝  -> «
+    "\u275e": "\u00bb",    # ❞  -> »
+    # علامات صح/خطأ
+    "\u2705": "\u2713",    # ✅  -> ✓
+    "\u274c": "\u00d7",    # ❌  -> ×
+    "\u274e": "\u00d7",    # ❎
+    "\u2714": "\u2713",    # ✔  -> ✓
+    "\u2718": "\u00d7",    # ✘  -> ×
+    "\u2716": "\u00d7",    # ✖
+    "\u2611": "\u2713",    # ☑
+    # تنبيهات وسهام
+    "\u26a0": "!",         # ⚠  -> !
+    "\u27a1": "\u2192",    # ➡  -> →
+    "\u2b05": "\u2190",    # ⬅
+    "\u2757": "!",         # ❗
+    "\u2753": "?",         # ❓
+    "\u203c": "!!",        # ‼
+    "\u2049": "!",         # ⁉
+    "\u2139": "i",         # ℹ
+    # رموز عامة
+    "\u2026": "...",       # …
+    "\u2122": "TM",        # ™
+    "\u00ae": "(R)",       # ®
+    "\u00a9": "(C)",       # ©
+    # نقاط زخرفية
+    "\u25aa": "\u2022",    # ▪
+    "\u25e6": "\u2022",    # ◦
+    "\u25cf": "\u2022",    # ●
+    "\u25cb": "\u2022",    # ○
+    "\u2726": "\u2022",    # ✦
+    "\u2727": "\u2022",    # ✧
+    "\u2605": "\u2022",    # ★
+    "\u2606": "\u2022",    # ☆
+    "\u2b50": "\u2022",    # ⭐
+    "\u2764": "\u2022",    # ❤
+    # رياضيات ومنطق (مهمة جداً لمواد نظرية الحوسبة)
+    "\u21d2": " => ",      # ⇒
+    "\u21d0": " <= ",      # ⇐
+    "\u21d4": " <=> ",     # ⇔
+    "\u2208": " in ",      # ∈
+    "\u2209": " not in ",  # ∉
+    "\u2286": " sub ",     # ⊆
+    "\u2287": " sup ",     # ⊇
+    "\u222a": " U ",       # ∪
+    "\u2229": " N ",       # ∩
+    "\u2205": " {} ",      # ∅
+    "\u2200": " for all ", # ∀
+    "\u2203": " exists ",  # ∃
+    "\u2227": " AND ",     # ∧
+    "\u2228": " OR ",      # ∨
+    "\u2202": " d/dx ",    # ∂
+    "\u221b": " cuberoot ",# ∛
+    # إيموجي شائعة في مخرجات Gemini
+    "\U0001f4cc": "\u2022",  # 📌
+    "\U0001f3af": "\u2022",  # 🎯
+    "\U0001f4a1": "\u2022",  # 💡
+    "\U0001f534": "\u2022",  # 🔴
+    "\U0001f7e2": "\u2022",  # 🟢
+    "\U0001f7e1": "\u2022",  # 🟡
+    "\U0001f4d6": "\u2022",  # 📖
+    "\U0001f4dd": "\u2022",  # 📝
+    "\U0001f512": "\u2022",  # 🔒
+    "\U0001f511": "\u2022",  # 🔑
+    "\U0001f680": "\u2022",  # 🚀
+    "\U0001f4e6": "\u2022",  # 📦
+    "\U0001f4ca": "\u2022",  # 📊
+    "\U0001f535": "\u2022",  # 🔵
+    "\U0001f7e3": "\u2022",  # 🟣
+    "\U0001f7e0": "\u2022",  # 🟠
+    "\U0001f947": "\u2022",  # 🥇
+    "\U0001f4aa": "\u2022",  # 💪
+    "\U0001f642": "\u2022",  # 🙂
+    "\U0001f60a": "\u2022",  # 😊
+    "\U0001f622": "\u2022",  # 😢
+    "\U0001f621": "\u2022",  # 😡
+    "\U0001f914": "\u2022",  # 🤔
+    "\U0001f44d": "\u2022",  # 👍
+    "\U0001f44e": "\u2022",  # 👎
+    "\U0001f446": "\u2022",  # 👆
+    "\U0001f447": "\u2022",  # 👇
+    "\U0001f525": "\u2022",  # 🔥
+    "\U0001f31f": "\u2022",  # 🌟
+    "\U0001f4cd": "\u2022",  # 📍
+    "\U0001f4c5": "\u2022",  # 📅
+    "\U0001f4c6": "\u2022",  # 📆
+    "\U0001f4b0": "\u2022",  # 💰
+    "\U0001f9e0": "\u2022",  # 🧠
+    "\U0001f4bb": "\u2022",  # 💻
+    "\U0001f4f1": "\u2022",  # 📱
+    "\U0001f4e2": "\u2022",  # 📢
+    "\u2795": "\u00d7",     # ➕
+    "\u2796": "\u00d7",     # ➖
+    "\u274a": "\u2713",     # ❊
+    "\u2709": "\u2022",     # ✉
+    "\u2706": "\u2022",     # ✆
+    "\u2708": "\u2022",     # ✈
+    "\u2600": "\u2022",     # ☀
+    "\u2601": "\u2022",     # ☁
+    "\u2614": "\u2022",     # ☔
+    "\u26a1": "!",          # ⚡
+    "\u2603": "\u2022",     # ☃
+}
+
+# محارف صفرية/اتجاه لا يُنظر إليها كنص أبداً.
+_INVISIBLE = (
+    "\u200b"  # zero width space
+    "\u200c"  # zero width non-joiner
+    "\u200d"  # zero width joiner
+    "\u200e"  # left-to-right mark
+    "\u200f"  # right-to-left mark
+    "\u061c"  # arabic letter mark
+    "\ufeff"  # BOM
+    "\ufe0f"  # variation selector-16
+    "\ufe0e"
+    "\u00ad"  # soft hyphen
+)
+
+_coverage_cache = None
+
+
+def _font_coverage():
+    """
+    المحارف المتوفرة فعلياً في الخطين المسجّلين (Regular + Bold).
+
+    نأخذ التقاطع حتى يكون النص آمناً في كل الأنماط.
+    """
+
+    global _coverage_cache
+
+    if _coverage_cache is not None:
+        return _coverage_cache
+
+    sets = []
+
+    for font_name in (REGULAR_FONT, BOLD_FONT):
+        try:
+            face = pdfmetrics.getFont(font_name).face
+        except Exception:
+            continue
+
+        char_to_glyph = getattr(face, "charToGlyph", None)
+        if char_to_glyph:
+            sets.append(set(char_to_glyph.keys()))
+
+    if not sets:
+        _coverage_cache = set()
+        return _coverage_cache
+
+    _coverage_cache = set.intersection(*sets)
+    return _coverage_cache
+
+
+def _sanitize_glyphs(text):
+    """
+    يحذف/يستبدل أي حرف غير متوفر في الخط.
+
+    بدون هذا تظهر مربعات سوداء (tofu) لأي رمز أو إيموجي
+    يكتبه Gemini ولا يحتوي عليه الخط.
+    """
+
+    if not text:
+        return text
+
+    coverage = _font_coverage()
+    if not coverage:
+        return text
+
+    out = []
+
+    for ch in text:
+        code = ord(ch)
+
+        if code in coverage:
+            out.append(ch)
+            continue
+
+        replacement = _CHAR_MAP.get(ch)
+
+        if replacement and all(ord(c) in coverage for c in replacement):
+            out.append(replacement)
+            continue
+
+        # لا يوجد بديل -> نحذفه بدل مربع أسود.
+
+    return "".join(out)
 
 
 # ============================================================
@@ -153,8 +355,8 @@ def _clean_markdown(text):
     text = text.replace("\r", "\n")
 
     # Remove invisible characters
-    text = text.replace("\u200b", "")
-    text = text.replace("\ufeff", "")
+    for _ch in _INVISIBLE:
+        text = text.replace(_ch, "")
 
     # Keep equations readable when Gemini returns LaTeX markup.
     text = re.sub(r"\\begin\{(?:aligned|align)\}|\\end\{(?:aligned|align)\}", "", text)
@@ -323,8 +525,20 @@ def _format_text(text):
 
     text = _clean_markdown(text)
 
+    # تنقية قبل التشكيل حتى تمرّ البدائل عبر خوارزمية الاتجاه
+    # وتُرتب صحيحاً داخل النص العربي.
+    text = _sanitize_glyphs(text)
+
+    if _has_arabic(text):
+        text = _prepare_rtl(text)
+
+    # escape() لازم يجي AFTER التشكيل: علامة & حيادية في خوارزمية
+    # الاتجاه، فلو جأت قبلها تتفكك الـ Entities
+    # (&amp; يتحول إلى ;amp&) ويظهر النص الحرف بحرف.
     text = escape(text)
-    return _prepare_rtl(text) if _has_arabic(text) else text
+
+    # تنقية ثانية بعد التشكيل (أمان إضافي لأي شكل عرض ناقص).
+    return _sanitize_glyphs(text)
 
 
 def _style_for_text(styles, style_name, text):
@@ -575,7 +789,9 @@ def _create_styles():
         styles[f"{style_name}_english"] = ParagraphStyle(
             f"PDF{style_name.title()}English",
             parent=styles[style_name],
-            fontName="Helvetica",
+            # خط الوالد بدل Helvetica: Helvetica لا يحتوي → ✓ ⇒ وغيرها
+            # فكانت تظهر مربعات سوداء في السطور الإنجليزية.
+            fontName=styles[style_name].fontName,
             alignment=TA_CENTER if style_name == "title" else 0,
             wordWrap=None,
             rightIndent=0,
@@ -801,13 +1017,11 @@ def create_pdf(
 
         if line_type == "bullet":
 
-            bullet_text = _format_text(
-                value
-            )
-
+            # ننسّق مرة واحدة فقط — استدعاء _format_text مرتين
+            # كان يكرّر escape() فتظهر "&amp;" داخل الملف.
             content = (
                 "• "
-                + bullet_text
+                + value
             )
 
             story.append(
@@ -827,10 +1041,7 @@ def create_pdf(
 
             number, body = value
 
-            body = _format_text(
-                body
-            )
-
+            # تنسيق واحد فقط (انظر ملاحظة البوليت).
             content = (
                 f"{number}. "
                 + body
@@ -851,13 +1062,11 @@ def create_pdf(
 
         if line_type == "quote":
 
-            quote = _format_text(
-                value
-            )
-
+            # ❝ (U+275D) غير متوفر في الخط -> كان يطلع مربع أسود.
             content = (
-                "❝ "
-                + quote
+                "« "
+                + value
+                + " »"
             )
 
             story.append(
