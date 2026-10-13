@@ -94,6 +94,8 @@ async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "مثال: /addinstructor 987654321 omar@uni.edu.sd عمر محمد\n\n"
         "/addadmin <Telegram_User_ID> - إضافة مشرف\n"
         "مثال: /addadmin 123456789\n\n"
+        "/addcourse <اسم المادة> - إضافة مادة\n"
+        "مثال: /addcourse التحليل الرياضي\n\n"
         "─── تعديل ───\n"
         "/editstudent <id> <field> <value> - تعديل بيانات طالب\n"
         "مثال: /editstudent 123456789 name علي الجديد\n\n"
@@ -105,7 +107,11 @@ async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/deleteinstructor <id> - حذف أستاذ\n"
         "مثال: /deleteinstructor 987654321\n\n"
         "/removeadmin <Telegram_User_ID> - إزالة مشرف\n"
-        "مثال: /removeadmin 123456789"
+        "مثال: /removeadmin 123456789\n\n"
+        "─── لوحة تفاعلية ───\n"
+        "/adminpanel - قائمة أزرار (عرض/إضافة/تعديل/حذف)\n\n"
+        "💡 كل عملية ناجحة يُعقبها رد تأكيد:\n"
+        "تمت الإضافة / تم التعديل / تم الحذف."
     )
 
 
@@ -286,6 +292,26 @@ async def add_instructor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _add_person(update, context, "instructors", "instructor")
 
 
+async def add_course_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """إنشاء مادة جديدة عبر /addcourse <اسم المادة> مع رسالة تأكيد."""
+    if not await require_admin(update):
+        return
+    if not context.args:
+        await update.effective_message.reply_text(
+            "الصيغة: /addcourse <اسم المادة>\n"
+            "مثال: /addcourse التحليل الرياضي"
+        )
+        return
+    name = " ".join(context.args).strip()
+    # استيراد كسول: handlers يستورد من هذا الملف (Circular Import)
+    from telegram_bot.handlers import _create_course_named
+    # _create_course_named يرد فقط عند الفشل، فالنجاح نؤكده هنا.
+    if await _create_course_named(update, context, name):
+        await update.effective_message.reply_text(
+            f"✅ تم إنشاء المادة «{name}» بنجاح وهي الآن ضمن قائمة المواد."
+        )
+
+
 async def _delete_person(update: Update, context: ContextTypes.DEFAULT_TYPE, collection_name: str, label: str):
     if not await require_admin(update):
         return
@@ -429,23 +455,33 @@ async def handle_person_delete(update: Update, context: ContextTypes.DEFAULT_TYP
 # ============================================================
 
 
-def _get_stats():
+async def _get_stats():
+    """
+    عدّادات لوحة التحكم.
+
+    المواد تُحسب من _all_courses() وليس من كولكشن courses وحده:
+    أغلب المواد مسجّلة على الأساتذة في instructors[].courses،
+    فكان العدّاد يرجع 0 دائماً وتظهر «📚 المواد: 0».
+    """
+
+    def _counts():
+        def _count(name):
+            try:
+                return len(list(db.collection(name).stream()))
+            except Exception:
+                return 0
+
+        return _count("students"), _count("instructors"), _count("admins")
+
+    students, instructors, admins = await asyncio.to_thread(_counts)
+
     try:
-        students = len(list(db.collection("students").stream()))
-    except Exception:
-        students = 0
-    try:
-        instructors = len(list(db.collection("instructors").stream()))
-    except Exception:
-        instructors = 0
-    try:
-        admins = len(list(db.collection("admins").stream()))
-    except Exception:
-        admins = 0
-    try:
-        courses = len(list(db.collection("courses").stream()))
+        from telegram_bot.handlers import _all_courses
+
+        courses = len(await _all_courses())
     except Exception:
         courses = 0
+
     return students, instructors, admins, courses
 
 
@@ -483,7 +519,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await user_is_admin(update):
         await update.message.reply_text("⛔ ليس لديك صلاحية الوصول لهذه اللوحة.")
         return
-    students, instructors, admins, courses = await asyncio.to_thread(_get_stats)
+    students, instructors, admins, courses = await _get_stats()
     text = (
         "🛡️ **لوحة إدارة النظام**\n\n"
         f"👥 الطلاب: {students}\n"
@@ -538,10 +574,27 @@ async def _admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _handle_view_person(query, parts[2], parts[3])
         return
     if len(parts) == 4 and parts[1] == "editperson":
-        await query.edit_message_text(
-            f"أرسل الآن: عدّل {parts[2]} {parts[3]} name القيمة الجديدة\n"
-            "أو استخدم email بدل name."
-        )
+        edit_commands = {"students": "/editstudent", "instructors": "/editinstructor"}
+        command = edit_commands.get(parts[2])
+        if command:
+            await query.edit_message_text(
+                "*✏️ تعديل البيانات*\n\n"
+                "أرسل الأمر التالي مع القيمة الجديدة:\n\n"
+                f"`{command} {parts[3]} name القيمة الجديدة`\n"
+                f"أو للبريد: `{command} {parts[3]} email new@uni.edu.sd`\n\n"
+                "الحقول المسموحة: name — email\n"
+                "✅ ستصلك رسالة تأكيد بعد نجاح التعديل.",
+                parse_mode="Markdown",
+            )
+        else:
+            await query.edit_message_text(
+                "*✏️ تعديل الأدمن*\n\n"
+                "لا يوجد حقل قابل للتعديل — احذفه ثم أعد إضافته:\n\n"
+                f"`/removeadmin {parts[3]}`\n"
+                f"`/addadmin {parts[3]}`\n\n"
+                "✅ ستصلك رسالة تأكيد في الخطوتين.",
+                parse_mode="Markdown",
+            )
         return
     if len(parts) == 3 and parts[1] == "assigncourse":
         await _handle_assign_course(query, parts[2])
@@ -552,7 +605,7 @@ async def _admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _show_home(query):
-    students, instructors, admins, courses = await asyncio.to_thread(_get_stats)
+    students, instructors, admins, courses = await _get_stats()
     text = (
         "🛡️ **لوحة إدارة النظام**\n\n"
         f"👥 الطلاب: {students}\n"
@@ -569,11 +622,13 @@ async def _show_home(query):
 
 
 async def _handle_list(query, section):
+    if section == "courses":
+        await _handle_list_courses(query)
+        return
     collection_map = {
         "students": ("students", "الطالب", "👤"),
         "instructors": ("instructors", "الدكتور", "👨‍🏫"),
         "admins": ("admins", "المشرف", "🛡️"),
-        "courses": ("courses", "المادة", "📚"),
     }
     if section not in collection_map:
         return
@@ -607,27 +662,90 @@ async def _handle_list(query, section):
     await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
 
 
+async def _handle_list_courses(query):
+    """
+    قائمة المواد.
+
+    تستخدم _all_courses() لأن المواد موزّعة بين كولكشن courses
+    وبين instructors[].courses — قراءة كولكشن courses وحده
+    كانت تُرجع «لا يوجد مادة مسجلين» دائماً.
+    """
+    try:
+        from telegram_bot.handlers import _all_courses
+
+        courses = await _all_courses()
+    except Exception:
+        courses = []
+
+    if not courses:
+        await query.edit_message_text(
+            "📋 لا توجد مواد مسجلة بعد.\n\n"
+            "➕ استخدم زر «إضافة المواد» لإضافتها.",
+            reply_markup=_sector_kb("courses"),
+        )
+        return
+
+    lines = [f"📋 قائمة المواد ({len(courses)}):", ""]
+    for course in courses[:40]:
+        name = course.get("name") or course.get("folder") or "مادة"
+        folder = course.get("folder") or ""
+        lines.append(f"📚 {name}" + (f"  —  {folder}" if folder else ""))
+    if len(courses) > 40:
+        lines.append(f"\n… و {len(courses) - 40} مادة أخرى")
+
+    buttons = [[InlineKeyboardButton("🔙 رجوع", callback_data="ap:sec:courses")]]
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
 async def _handle_add_prompt(query, section):
     prompts = {
         "students": (
-            "➕ **إضافة طالب**\n\n"
-            "أرسل الرسالة بالتنسيق التالي:\n"
-            "`أضف طالب 123456789 email@example.com اسم الطالب`"
+            "*➕ إضافة طالب*\n\n"
+            "الخطوات:\n"
+            "1) انسخ الأمر بالأسفل\n"
+            "2) استبدل القيم ببيانات الطالب\n"
+            "3) أرسله في هذه المحادثة\n\n"
+            "`/addstudent <id> <email> <name>`\n\n"
+            "مثال:\n"
+            "`/addstudent 123456789 ali@uni.edu.sd علي أحمد`\n\n"
+            "✅ ستصلك رسالة تأكيد: «تمت إضافة الطالب ... بنجاح»."
         ),
         "instructors": (
-            "➕ **إضافة دكتور**\n\n"
-            "أرسل الرسالة بالتنسيق التالي:\n"
-            "`أضف دكتور 987654321 email@example.com اسم الدكتور`"
+            "*➕ إضافة دكتور*\n\n"
+            "الخطوات:\n"
+            "1) انسخ الأمر بالأسفل\n"
+            "2) استبدل القيم ببيانات الدكتور\n"
+            "3) أرسله في هذه المحادثة\n\n"
+            "`/addinstructor <id> <email> <name>`\n\n"
+            "مثال:\n"
+            "`/addinstructor 987654321 omar@uni.edu.sd عمر محمد`\n\n"
+            "✅ ستصلك رسالة تأكيد: «تمت إضافة الأستاذ ... بنجاح»."
         ),
         "admins": (
-            "➕ **إضافة مشرف**\n\n"
-            "أرسل معرف المستخدم (Telegram ID أو رقم الواتساب):\n"
-            "`أضف مشرف 123456789`"
+            "*➕ إضافة مشرف*\n\n"
+            "الخطوات:\n"
+            "1) انسخ الأمر بالأسفل\n"
+            "2) ضع معرف المستخدم (Telegram User ID)\n"
+            "3) أرسله في هذه المحادثة\n\n"
+            "`/addadmin <Telegram_User_ID>`\n\n"
+            "مثال:\n"
+            "`/addadmin 123456789`\n\n"
+            "✅ ستصلك رسالة تأكيد: «تمت إضافة المشرف: ...»."
         ),
         "courses": (
-            "➕ **إضافة مادة**\n\n"
-            "أرسل اسم المادة وسيتم إنشاؤها تلقائياً:\n"
-            "`إضافة مادة التحليل الرياضي`"
+            "*➕ إضافة مادة*\n\n"
+            "الخطوات:\n"
+            "1) انسخ الأمر بالأسفل\n"
+            "2) ضع اسم المادة بعد الأمر\n"
+            "3) أرسله في هذه المحادثة\n\n"
+            "`/addcourse <اسم المادة>`\n\n"
+            "مثال:\n"
+            "`/addcourse التحليل الرياضي`\n\n"
+            "ولرفع ملف مباشرة: `/addcontent`\n\n"
+            "✅ ستصلك رسالة تأكيد: «تم إنشاء المادة ... ✅»."
         ),
     }
     kb = InlineKeyboardMarkup([
@@ -643,19 +761,44 @@ async def _handle_add_prompt(query, section):
 async def _handle_edit_prompt(query, section):
     prompts = {
         "students": (
-            "✏️ **تعديل طالب**\n\n"
-            "أرسل:\n"
-            "`تعديل طالب 123456789 حقل=قيمة`\n\n"
-            "الحقول المسموحة: name, email"
+            "*✏️ تعديل طالب*\n\n"
+            "الخطوات:\n"
+            "1) انسخ الأمر بالأسفل\n"
+            "2) اختر الحقل: name أو email\n"
+            "3) ضع القيمة الجديدة بعده\n\n"
+            "`/editstudent <id> <field> <value>`\n\n"
+            "أمثلة:\n"
+            "`/editstudent 123456789 name علي الجديد`\n"
+            "`/editstudent 123456789 email new@uni.edu.sd`\n\n"
+            "✅ ستصلك رسالة تأكيد بعد نجاح التعديل."
         ),
         "instructors": (
-            "✏️ **تعديل دكتور**\n\n"
-            "أرسل:\n"
-            "`تعديل دكتور 987654321 حقل=قيمة`\n\n"
-            "الحقول المسموحة: name, email"
+            "*✏️ تعديل دكتور*\n\n"
+            "الخطوات:\n"
+            "1) انسخ الأمر بالأسفل\n"
+            "2) اختر الحقل: name أو email\n"
+            "3) ضع القيمة الجديدة بعده\n\n"
+            "`/editinstructor <id> <field> <value>`\n\n"
+            "أمثلة:\n"
+            "`/editinstructor 987654321 name عمر الجديد`\n"
+            "`/editinstructor 987654321 email new@uni.edu.sd`\n\n"
+            "✅ ستصلك رسالة تأكيد بعد نجاح التعديل."
         ),
-        "admins": "✏️ تعديل الأدمنية — يتم عبر حذف وإعادة إضافة.",
-        "courses": "✏️ تعديل المواد — يتم عبر حذف وإعادة إضافة.",
+        "admins": (
+            "*✏️ تعديل الأدمنية*\n\n"
+            "لا يوجد حقل قابل للتعديل — يتم بالحذف ثم الإعادة:\n"
+            "1) `/removeadmin <Telegram_User_ID>`\n"
+            "2) `/addadmin <Telegram_User_ID>`\n\n"
+            "✅ ستصلك رسالة تأكيد في الخطوتين."
+        ),
+        "courses": (
+            "*✏️ تعديل المواد*\n\n"
+            "اسم المادة لا يُعدَّل بعد إنشائها.\n"
+            "للتبديل: احذفها ثم أضفها من جديد:\n"
+            "1) `/deletecontent` لحذف الملفات والمادة\n"
+            "2) `/addcourse <اسم المادة>` لإعادة إنشائها\n\n"
+            "✅ ستصلك رسالة تأكيد بعد كل خطوة."
+        ),
     }
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔙 رجوع", callback_data=f"ap:sec:{section}")],
@@ -675,8 +818,12 @@ async def _handle_del_list(query, section):
     }
     if section not in collection_map:
         await query.edit_message_text(
-            "🗑️ حذف المواد يتم عبر حذف الملفات.",
+            "🗑️ حذف مادة يتم عبر الأمر:\n\n"
+            "`/deletecontent`\n\n"
+            "سيسمح لك باختيار المادة ثم حذف ملفاتها.\n"
+            "✅ ستصلك رسالة تأكيد بعد الحذف.",
             reply_markup=_sector_kb(section),
+            parse_mode="Markdown",
         )
         return
     coll, label, icon = collection_map[section]
@@ -777,13 +924,18 @@ async def _handle_view_person(query, section, person_id):
 
 
 async def _handle_assign_course(query, student_id):
-    def _load():
-        docs = list(db.collection("courses").stream())
-        courses = [doc.to_dict() for doc in docs]
-        student_doc = db.collection("students").document(student_id).get()
-        return courses, (student_doc.to_dict() if student_doc.exists else {})
+    from telegram_bot.handlers import _all_courses
 
-    courses, student_data = await asyncio.to_thread(_load)
+    def _load_student():
+        student_doc = db.collection("students").document(student_id).get()
+        return student_doc.to_dict() if student_doc.exists else {}
+
+    # مواد فعلية (دمج courses + instructors) بدل كولكشن courses وحده
+    try:
+        courses = await _all_courses()
+    except Exception:
+        courses = []
+    student_data = await asyncio.to_thread(_load_student)
     if not courses:
         await query.edit_message_text(
             "❌ لا توجد مواد متاحة. أضف مواد أولاً.",

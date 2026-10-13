@@ -8,6 +8,7 @@ from config import TOKEN
 from telegram_bot.admin_panel import (
     _admin_callback,
     add_admin,
+    add_course_cmd,
     add_instructor,
     add_student,
     admin_dashboard,
@@ -103,6 +104,7 @@ def main():
     app.add_handler(CommandHandler("people", list_all_people))
     app.add_handler(CommandHandler("addstudent", add_student))
     app.add_handler(CommandHandler("addinstructor", add_instructor))
+    app.add_handler(CommandHandler("addcourse", add_course_cmd))
     app.add_handler(CommandHandler("editstudent", edit_student))
     app.add_handler(CommandHandler("editinstructor", edit_instructor))
     app.add_handler(CommandHandler("deletestudent", delete_student))
