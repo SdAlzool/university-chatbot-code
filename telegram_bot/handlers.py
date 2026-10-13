@@ -1160,14 +1160,18 @@ async def _handle_admin_command(update, context, text):
             return True
         if asks_list:
             try:
-                docs = await asyncio.to_thread(lambda: list(db.collection("courses").stream()))
+                # _all_courses() تدمج كولكشن courses + المواد المسجّلة على الأساتذة
+                courses = await _all_courses()
             except Exception:
-                docs = []
-            if not docs:
+                courses = []
+            if not courses:
                 await reply.reply_text("📋 لا توجد مواد مسجلة.")
             else:
-                lines = [f"📋 قائمة المواد ({len(docs)}):", ""]
-                lines += [f"📚 {d.id} — {(d.to_dict() or {}).get('name', d.id)}" for d in docs[:50]]
+                lines = [f"📋 قائمة المواد ({len(courses)}):", ""]
+                lines += [
+                    f"📚 {c.get('name') or c.get('folder') or 'مادة'}"
+                    for c in courses[:50]
+                ]
                 await reply.reply_text("\n".join(lines))
             return True
         if has_del:

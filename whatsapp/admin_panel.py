@@ -18,6 +18,29 @@ from whatsapp.api import get_state, reset_state, send_buttons, send_list, send_t
 # Stats
 # ============================================================
 
+def _count_effective_courses():
+    """
+    العدد الفعلي للمقررات.
+
+    المواد تكون إمّا في كولكشن courses أو مسجّلة على مستندات الأساتذة
+    في instructors[].courses — فالقائمة الصحيحة هي دمج الاثنين.
+    """
+    courses = {}
+    try:
+        for doc in db.collection("courses").stream():
+            courses[doc.id] = doc.to_dict() or {}
+    except Exception:
+        pass
+    try:
+        for doc in db.collection("instructors").stream():
+            for course in (doc.to_dict() or {}).get("courses", []):
+                if isinstance(course, dict) and course.get("folder"):
+                    courses.setdefault(course["folder"], course)
+    except Exception:
+        pass
+    return len(courses)
+
+
 def _get_stats():
     try:
         students = len(list(db.collection("students").stream()))
@@ -31,10 +54,7 @@ def _get_stats():
         admins = len(list(db.collection("admins").stream()))
     except Exception:
         admins = 0
-    try:
-        courses = len(list(db.collection("courses").stream()))
-    except Exception:
-        courses = 0
+    courses = _count_effective_courses()
     return students, instructors, admins, courses
 
 
@@ -117,6 +137,33 @@ def wa_admin_more_options(phone, section):
 # List People
 # ============================================================
 
+def _list_effective_courses():
+    """
+    قائمة المقررات بالكامل (كولكشن courses + المسجّلة على الأساتذة).
+
+    ترجع قوام مثل [{name, folder}, ...] عشان العرض.
+    """
+    courses = {}
+    try:
+        for doc in db.collection("courses").stream():
+            data = doc.to_dict() or {}
+            data.setdefault("name", doc.id)
+            data.setdefault("folder", doc.id)
+            courses[doc.id] = data
+    except Exception:
+        pass
+    try:
+        for doc in db.collection("instructors").stream():
+            for course in (doc.to_dict() or {}).get("courses", []):
+                if isinstance(course, dict) and course.get("folder"):
+                    entry = dict(course)
+                    entry.setdefault("name", entry["folder"])
+                    courses.setdefault(entry["folder"], entry)
+    except Exception:
+        pass
+    return list(courses.values())
+
+
 def wa_admin_list(phone, section):
     """List all documents in a collection."""
     collection_map = {
@@ -129,6 +176,19 @@ def wa_admin_list(phone, section):
         return
 
     coll, label, icon = collection_map[section]
+
+    # المواد لها مصدر مزدوج (Firestore + الأساتذة) فالعرض يدمجهم
+    if section == "courses":
+        items = _list_effective_courses()
+        if not items:
+            send_text(phone, f"📋 لا يوجد {label} مسجلين.\n\nاكتب «قائمة» للعودة إلى القائمة الرئيسية.")
+            return
+        lines = [f"📋 قائمة {label} ({len(items)}):\n"]
+        for item in items[:20]:
+            lines.append(f"{icon} {item.get('folder', '')} — {item.get('name', '')}")
+        send_text(phone, "\n".join(lines))
+        return
+
     try:
         docs = list(db.collection(coll).stream())
     except Exception:

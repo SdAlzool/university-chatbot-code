@@ -59,6 +59,9 @@ async def show_my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update):
         return
+    # import كسول لتفادي Circular Import (handlers يستورد من هذا الملف)
+    from telegram_bot.handlers import _all_courses
+
     counts = await asyncio.gather(
         asyncio.to_thread(lambda: len(list(db.collection("students").stream()))),
         asyncio.to_thread(lambda: len(list(db.collection("instructors").stream()))),
@@ -66,13 +69,17 @@ async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         asyncio.to_thread(lambda: len(list(db.collection("admins").stream()))),
         asyncio.to_thread(list_repository_folders),
     )
+    # العدد الفعلي للمقررات = كولكشن courses + مسجّلة على الأساتذة
+    course_docs = await _all_courses()
+    effective_course_count = len(course_docs)
     bootstrap_count = len(ADMIN_TELEGRAM_IDS)
     github_course_count = "غير متاح" if counts[4] is None else str(len(counts[4]))
     await update.effective_message.reply_text(
         "لوحة إدارة المشروع\n\n"
         f"الطلاب: {counts[0]}\n"
         f"أعضاء هيئة التدريس: {counts[1]}\n"
-        f"المقررات في Firestore: {counts[2]}\n"
+        f"المقررات المتاحة: {effective_course_count}\n"
+        f"  (منها في Firestore: {counts[2]})\n"
         f"مجلدات المقررات في GitHub: {github_course_count}\n"
         f"المشرفون المضافون: {counts[3]}\n"
         f"المشرفون الأساسيون (.env): {bootstrap_count}\n\n"
