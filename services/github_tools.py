@@ -1,17 +1,9 @@
-"""أدوات GitHub: رفع/حذف/تنزيل ملفات المواد."""
-
 import base64
 from pathlib import PurePosixPath
 
 import requests
 
 from config import GITHUB_REPO, GITHUB_TOKEN
-
-
-# ============================================================
-# من الملف الأصلي: github_utils.py
-# ============================================================
-
 
 def github_headers():
     return {
