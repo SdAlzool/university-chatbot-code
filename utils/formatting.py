@@ -8,6 +8,46 @@
 # ============================================================
 
 
+# حد الرسالة النصية الواحدة في واتساب وتيليجرام (4096)
+TEXT_MESSAGE_LIMIT = 4096
+
+
+def chunk_text(text, limit=TEXT_MESSAGE_LIMIT):
+    """
+    يقسّم النص الطويل إلى مقاطع لا تتجاوز حد منصة الرسائل.
+
+    بدون تقسيم كانت الرسائل تُقصّ عند منتصف الجملة فتصل "نص" ناقص،
+    أو يُرفض الإرسال كلياً في تيليجرام. المقطع يُفضَّل أن ينتهي عند
+    نهاية سطر حتى تبقى القراءة مريحة.
+    """
+    text = str(text)
+    if len(text) <= limit:
+        return [text] if text else []
+
+    chunks = []
+    rest = text
+    while rest:
+        if len(rest) <= limit:
+            chunks.append(rest)
+            break
+        window = rest[:limit]
+        cut = window.rfind("\n")
+        if cut < limit // 4:
+            space = window.rfind(" ")
+            if space >= limit // 4:
+                cut = space
+        if cut <= 0:
+            # لا يوجد موضع كسر مناسب — اقطع عند الحد تماماً
+            chunks.append(rest[:limit])
+            rest = rest[limit:]
+            continue
+        # نضم علامة الكسر إلى المقطع الحالي حتى لا نفقد أي حرف
+        # (cut <= limit-1 دائماً، فالطول الناتج لا يتجاوز limit)
+        chunks.append(rest[:cut + 1])
+        rest = rest[cut + 1:]
+    return chunks
+
+
 def header(text):
     return f"━━━━━━━━━━━━━━━━━━━━\n{text}\n━━━━━━━━━━━━━━━━━━━━"
 

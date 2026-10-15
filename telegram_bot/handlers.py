@@ -54,7 +54,7 @@ from telegram_bot.admin_panel import (
     remove_admin_by_id,
     user_is_admin,
 )
-from utils.formatting import help_message
+from utils.formatting import chunk_text, help_message
 from utils.pdf_utils import extract_pdf_text, text_to_pdf_bytes
 
 
@@ -72,6 +72,26 @@ async def _all_courses():
             if course.get("folder"):
                 courses.setdefault(course["folder"], course)
     return list(courses.values())
+
+
+def _course_folders(courses):
+    """
+    يرجّع قائمة بأسماء المجلدات من مواد مخزّنة على طالب/أستاذ.
+
+    الصيغة الحديثة في Firestore قواميس {"name", "folder"}، لكن بيانات
+    قديمة كانت تحفظ اسم المجلد كنص مباشرة. ندعم الحالتين حتى لا ينهار
+    العرض أو مطابقة المواد.
+    """
+    folders = []
+    for item in courses or []:
+        if isinstance(item, dict):
+            folder = (item.get("folder") or "").strip()
+        else:
+            folder = str(item).strip()
+        if folder and folder not in folders:
+            folders.append(folder)
+    return folders
+
 
 async def show_courses(update, context):
     if not await _can_access_materials(update):
@@ -197,6 +217,19 @@ async def handle_course_file_action(update, context):
     else:
         await _summarize_file(query.message, file)
 
+
+async def _reply_long(target, text):
+    """
+    يرد بنص قد يتجاوز حد تيليجرام (4096 حرفاً) بتقسيمه على عدة رسائل.
+
+    كان النص يُقصّ عند 4000 حرف فيصل المستخدم بنص ناقص منتصف الجملة،
+    وما كان الإرسال الأطول ينجح أصلاً لأن تيليجرام يرفضه.
+    """
+    for part in chunk_text(text):
+        await target.reply_text(part)
+        await asyncio.sleep(0.3)
+
+
 async def _translate_file(target, file):
     try:
         url = await asyncio.to_thread(get_file_download_url_by_path, file["path"])
@@ -214,7 +247,7 @@ async def _translate_file(target, file):
                 f"النص:\n{text[:6000]}"
             ),
         )
-        await target.reply_text(f"ترجمة {file['name']}:\n\n{result.text[:4000]}")
+        await _reply_long(target, f"ترجمة {file['name']}:\n\n{result.text}")
     except Exception:
         logging.exception("Translation failed")
         await target.reply_text("تعذر ترجمة الملف الآن.")
@@ -237,7 +270,7 @@ async def _summarize_file(target, file):
                 f"النص:\n{text[:6000]}"
             ),
         )
-        await target.reply_text(f"ملخص {file['name']}:\n\n{result.text[:4000]}")
+        await _reply_long(target, f"ملخص {file['name']}:\n\n{result.text}")
     except Exception:
         logging.exception("Summarisation failed")
         await target.reply_text("تعذر تلخيص الملف الآن.")
@@ -273,7 +306,8 @@ async def _can_access_materials(update):
 async def _available_courses_for_user(update):
     student_id, student = await asyncio.to_thread(get_student_by_chat_id, update.effective_chat.id)
     if student:
-        assigned_courses = student.get("courses") or []
+        # _course_folders يتعامل مع القواميس {"name","folder"} والنصوص القديمة
+        assigned_courses = _course_folders(student.get("courses"))
         if not assigned_courses:
             return [], student_id
         all_courses = await _all_courses()
@@ -1079,7 +1113,7 @@ async def handle_file_action(update, context):
             filename = "translation.pdf" if base == "translate" else "summary.pdf"
             await query.message.reply_document(document=pdf_bytes, filename=filename)
         else:
-            await query.message.reply_text(result_text[:4000])
+            await _reply_long(query.message, result_text)
     except Exception:
         logging.exception("Telegram file processing failed")
         await query.message.reply_text("تعذرت معالجة الملف.")

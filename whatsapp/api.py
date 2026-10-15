@@ -8,6 +8,7 @@ import requests
 
 from config import WHATSAPP_API_VERSION, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_TOKEN
 from services.github_tools import download_file_bytes
+from utils.formatting import chunk_text
 
 
 # ============================================================
@@ -101,15 +102,32 @@ def wa_send(payload):
         return None
 
 
+# حد واتساب للنص في الرسالة الواحدة (أي ما فوقه يُرفض أو يُقصّ).
+WA_TEXT_LIMIT = 4096
+
+
 def send_text(to, body):
-    text = str(body)[:4000]
-    logging.info("WA send_text to=%s len=%d", to, len(text))
-    return wa_send({
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "text",
-        "text": {"body": text, "preview_url": False},
-    })
+    chunks = chunk_text(body, WA_TEXT_LIMIT)
+    if not chunks:
+        return None
+    logging.info(
+        "WA send_text to=%s parts=%d total=%d",
+        to, len(chunks), sum(len(c) for c in chunks),
+    )
+    response = None
+    for index, part in enumerate(chunks):
+        if index:
+            # ترتيب الرسائل يصل مضموناً عند تباعد بسيط بين المقاطع
+            time.sleep(0.4)
+        response = wa_send({
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "text",
+            "text": {"body": part, "preview_url": False},
+        })
+        if response is None:
+            break
+    return response
 
 
 def send_buttons(to, body, buttons):

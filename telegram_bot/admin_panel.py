@@ -924,7 +924,7 @@ async def _handle_view_person(query, section, person_id):
 
 
 async def _handle_assign_course(query, student_id):
-    from telegram_bot.handlers import _all_courses
+    from telegram_bot.handlers import _all_courses, _course_folders
 
     def _load_student():
         student_doc = db.collection("students").document(student_id).get()
@@ -942,15 +942,23 @@ async def _handle_assign_course(query, student_id):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data=f"ap:view:students:{student_id}")]]),
         )
         return
-    assigned_courses = student_data.get("courses") or []
-    lines = [f"📚 **مواد الطالب {student_id}**\n"]
-    lines.append(f"المواد الحالية: {', '.join(assigned_courses) if assigned_courses else 'لا توجد مواد'}\n")
+    assigned = student_data.get("courses") or []
+    # _course_folders يتعامل مع القواميس {"name","folder"} والنصوص القديمة
+    assigned_folders = _course_folders(assigned)
+    assigned_names = [
+        (item.get("name") or item.get("folder") or "مادة") if isinstance(item, dict) else str(item)
+        for item in assigned
+    ]
+    lines = [f"*📚 مواد الطالب {student_id}*\n"]
+    lines.append(
+        "المواد الحالية: " + (", ".join(assigned_names) if assigned_names else "لا توجد مواد") + "\n"
+    )
     lines.append("اختر المادة لتعيينها أو إزالتها:")
     buttons = []
     for course in courses[:20]:
         folder = course.get("folder", "")
         name = course.get("name", folder)
-        status = "✅" if folder in assigned_courses else "⬜"
+        status = "✅" if folder in assigned_folders else "⬜"
         buttons.append([
             InlineKeyboardButton(
                 f"{status} {name}",
@@ -964,16 +972,35 @@ async def _handle_assign_course(query, student_id):
 
 async def _handle_toggle_course(query, student_id, course_folder):
     from firebase_admin import firestore
+    from telegram_bot.handlers import _all_courses, _course_folders
+
+    # نحتاج بيانات المادة لنخزنها بالصيغة الموحّدة {"name", "folder"}
+    try:
+        courses = await _all_courses()
+    except Exception:
+        courses = []
+    course = next(
+        (c for c in courses if c.get("folder") == course_folder),
+        {"name": course_folder, "folder": course_folder},
+    )
+    course_ref = {"name": course.get("name") or course_folder, "folder": course_folder}
 
     def _toggle():
-        student_doc = db.collection("students").document(student_id).get()
-        student_data = student_doc.to_dict() if student_doc.exists else {}
-        assigned = student_data.get("courses") or []
         ref = db.collection("students").document(student_id)
-        if course_folder in assigned:
-            ref.update({"courses": firestore.ArrayRemove([course_folder])})
+        student_doc = ref.get()
+        assigned = (student_doc.to_dict() if student_doc.exists else {}).get("courses") or []
+
+        if course_folder in _course_folders(assigned):
+            # ArrayRemove يحتاج مطابقة تامة للعنصر المخزّن،
+            # فنحذف القيمة الأصلية (قواميس أو نصوص قديمة).
+            existing = [
+                item for item in assigned
+                if ((item.get("folder") if isinstance(item, dict) else str(item)) == course_folder)
+            ]
+            if existing:
+                ref.update({"courses": firestore.ArrayRemove(existing)})
         else:
-            ref.update({"courses": firestore.ArrayUnion([course_folder])})
+            ref.update({"courses": firestore.ArrayUnion([course_ref])})
 
     await asyncio.to_thread(_toggle)
     await _handle_assign_course(query, student_id)

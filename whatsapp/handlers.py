@@ -434,7 +434,7 @@ async def wa_summarize(phone):
                 f"النص:\n{text[:6000]}"
             ),
         )
-        send_text(phone, f"ملخص {file['name']}:\n\n{result.text[:4000]}")
+        send_text(phone, f"ملخص {file['name']}:\n\n{result.text[:12000]}")
     except Exception:
         logging.exception("Summarise failed")
         send_text(phone, "تعذر تلخيص الملف الآن.")
@@ -670,7 +670,8 @@ async def wa_process_upload(phone, action):
         )
         part = types.Part.from_bytes(data=file_data, mime_type=mime)
         response = await call_gemini_with_retry(client.models.generate_content, model=MODEL_NAME, contents=[prompt, part])
-        result_text = (response.text or "").strip()[:4000]
+        # send_text يقسّم النص الطويل على عدة رسائل، فلا داعي لقصّه هنا
+        result_text = (response.text or "").strip()[:12000]
         if action.endswith("_pdf"):
             try:
                 from utils.pdf_utils import text_to_pdf_bytes
