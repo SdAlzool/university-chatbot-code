@@ -1,8 +1,14 @@
 """تيليجرام: تسجيل الـhandlers وتشغيل الـpolling."""
 
 import logging
+import warnings
 
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+
+# تحذير PTB عن المهام المُنشأة في post_init قبل start — متوقّع ولا يمنع العمل
+warnings.filterwarnings(
+    "ignore", message="Tasks created via `Application.create_task`"
+)
 
 from config import TOKEN
 from telegram_bot.admin_panel import (
@@ -74,8 +80,12 @@ async def _on_error(update, context):
         exc_info=(type(error), error, error.__traceback__),
     )
 
-def _post_init(app):
-    """يبدأ مجدول طلبات التقييم المؤجّلة (رسالة منفصلة بعد كل رد ذكاء اصطناعي)."""
+async def _post_init(app):
+    """يبدأ مجدول طلبات التقييم المؤجّلة (رسالة منفصلة بعد كل رد ذكاء اصطناعي).
+
+    يجب أن يكون async: PTB تنادي post_init كمعامل قبل run_until_complete،
+    فدالة عادية تُنفَّذ برّا الـloop وتسقط create_task بـ "no running event loop".
+    """
     app.create_task(feedback_prompt_loop(app))
     logging.info("⏳ Feedback prompt scheduler started (sweep every 60s)")
 

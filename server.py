@@ -3,6 +3,7 @@
 التشغيل:  python server.py   (محلي و Render)
 """
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -258,6 +259,13 @@ def main():
             logging.error("telegram run_polling returned — restarting in 15s")
         except Exception:
             logging.exception("telegram crashed — restarting in 15s")
+        # نظّف الـloop المغلق الذي تتركه المحاولة الفاشلة من سياسة asyncio،
+        # وإلا تاخذ المحاولة التالية نفس الـloop الميت وتفشل بـ
+        # "Event loop is closed" (يرجع PTB get_event_loop من السياسة).
+        try:
+            asyncio.set_event_loop(None)
+        except Exception:
+            pass
         time.sleep(15)
 
 
