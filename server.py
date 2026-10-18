@@ -258,7 +258,11 @@ def main():
         try:
             from telegram_bot.bot import main as run_telegram
             run_telegram()
-            logging.error("telegram run_polling returned — restarting in 15s")
+            # انتهاء نظيف = غالباً إشارة إيقاف من Render وقت النشر — نخرج
+            # بدل إعادة التشغيل كي لا نزاحم النسخة الجديدة بطلب getUpdates
+            # آخر (409 Conflict).
+            logging.info("telegram polling stopped cleanly (shutdown signal) — exiting")
+            return
         except Exception:
             logging.exception("telegram crashed — restarting in 15s")
         # نظّف الـloop المغلق الذي تتركه المحاولة الفاشلة من سياسة asyncio،

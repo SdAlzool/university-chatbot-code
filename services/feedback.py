@@ -24,7 +24,7 @@ MAX_ANSWER_CHARS = 600
 PROMPT_DELAY_SECONDS = 60          # التأخير قبل طلب التقييم (دقيقة واحدة)
 PROMPT_COOLDOWN_SECONDS = 24 * 3600  # لا تكرار الطلب لنفس المستخدم/القناة
 PROMPT_EXPIRE_SECONDS = 24 * 3600    # إلغاء أي طلب تجاوز24 ساعة دون إرسال
-PROMPT_SWEEP_SECONDS = 30            # دورة فحص المستحقات (ثانية)
+PROMPT_SWEEP_SECONDS = 15            # دورة فحص المستحقات (ثانية)
 
 
 def _utcnow():
