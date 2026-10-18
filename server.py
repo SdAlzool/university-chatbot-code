@@ -236,6 +236,17 @@ def main():
         daemon=False,
     ).start()
 
+    # Feedback prompt scheduler (WhatsApp) — طلبات التقييم المؤجّلة
+    from whatsapp.handlers import wa_feedback_prompt_loop
+
+    threading.Thread(
+        target=_run_thread,
+        args=(wa_feedback_prompt_loop, "wa-feedback"),
+        name="wa-feedback",
+        daemon=True,
+    ).start()
+    logging.info("⏳ WA feedback prompt scheduler started (sweep every 60s)")
+
     # Telegram runs in the main thread
     try:
         from telegram_bot.bot import main as run_telegram

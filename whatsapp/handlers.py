@@ -11,7 +11,12 @@ from google.genai import types
 
 from config import ADMIN_WHATSAPP_NUMBERS, MODEL_NAME
 from services.email_service import send_otp_email
-from services.feedback import create_feedback, rate_feedback
+from services.feedback import (
+    PROMPT_SWEEP_SECONDS,
+    claim_due_prompts,
+    create_feedback,
+    rate_feedback,
+)
 from services.firebase_db import (
     clear_pending_upload,
     db,
@@ -728,25 +733,41 @@ async def handle_voice(phone, media_id):
 
 def _send_wa_answer(phone, question, answer, latency_ms=None):
     """
-    يرسل رد الذكاء الاصطناعي ثم يطلب تقييمه بالنجوم.
+    يرسل رد الذكاء الاصطناعي ويسجّله لطلب تقييم مؤجّل.
 
-    التقييم يُسجَّل في Firestore ليغذّي إحصائيات لوحة تحكم المشرفين.
+    تصل رسالة التقييم (النجوم) في رسالة منفصلة بعد PROMPT_DELAY_SECONDS
+    وبحد أقصى مرة كل24 ساعة لكل مستخدم — عبر wa_feedback_prompt_loop().
     """
-    doc_id = create_feedback(phone, "whatsapp", question, answer, latency_ms)
+    create_feedback(phone, "whatsapp", question, answer, latency_ms)
     send_text(phone, answer)
-    if doc_id:
-        send_list(
-            phone,
-            "قيّم هذا الرد بالنجوم ⭐",
-            [
-                (f"fb:{doc_id}:1", "⭐ 1", "ضعيف"),
-                (f"fb:{doc_id}:2", "⭐ 2", "مقبول"),
-                (f"fb:{doc_id}:3", "⭐ 3", "جيد"),
-                (f"fb:{doc_id}:4", "⭐ 4", "جيد جداً"),
-                (f"fb:{doc_id}:5", "⭐ 5", "ممتاز"),
-            ],
-            button_text="التقييم",
-        )
+
+
+def wa_feedback_prompt_loop():
+    """خيط دوري يرسل طلبات التقييم المستحقة للواتساب (نص + قائمة النجوم)."""
+    while True:
+        time.sleep(PROMPT_SWEEP_SECONDS)
+        try:
+            prompts = claim_due_prompts("whatsapp")
+        except Exception:
+            logging.exception("WA feedback prompt sweep failed")
+            continue
+        for doc_id, phone in prompts:
+            try:
+                send_text(phone, "لو كان الرد مفيداً، قيّمنا بالنجوم ⭐")
+                send_list(
+                    phone,
+                    "قيّم تجربتك مع البوت",
+                    [
+                        (f"fb:{doc_id}:1", "⭐ 1", "ضعيف"),
+                        (f"fb:{doc_id}:2", "⭐ 2", "مقبول"),
+                        (f"fb:{doc_id}:3", "⭐ 3", "جيد"),
+                        (f"fb:{doc_id}:4", "⭐ 4", "جيد جداً"),
+                        (f"fb:{doc_id}:5", "⭐ 5", "ممتاز"),
+                    ],
+                    button_text="التقييم",
+                )
+            except Exception:
+                logging.exception("WA feedback prompt failed (phone=%s)", phone)
 
 
 async def _wa_handle_feedback(phone, payload):

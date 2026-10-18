@@ -20,7 +20,12 @@ from telegram.ext import (
 
 from config import MODEL_NAME
 from services.email_service import send_otp_email
-from services.feedback import create_feedback, rate_feedback
+from services.feedback import (
+    PROMPT_SWEEP_SECONDS,
+    claim_due_prompts,
+    create_feedback,
+    rate_feedback,
+)
 from services.firebase_db import (
     db,
     get_instructor_by_chat_id,
@@ -234,23 +239,42 @@ async def _reply_long(target, text, reply_markup=None):
         await target.reply_text(part, reply_markup=reply_markup if index == 0 else None)
 
 
-async def _reply_with_rating(target, user_id, question, answer, latency_ms=None):
+async def _reply_tracked(target, user_id, question, answer, latency_ms=None):
     """
-    يرسل الرد ثم يطلب تقييمه بالنجوم (Feedback Stars).
+    يرسل رد الذكاء الاصطناعي ويسجّله لطلب تقييم مؤجّل.
 
-    التقييم يُسجَّل في Firestore ثم يغذّي إحصائيات لوحة تحكم المشرفين
-    (متوسط التقييم، المحادثات الناجحة، متوسط زمن الاستجابة).
+    بدل أزرار النجوم تحت الرد مباشرة، تصل رسالة تقييم منفصلة بعد
+    PROMPT_DELAY_SECONDS وبحد أقصى مرة كل24 ساعة لكل مستخدم — عبر
+    feedback_prompt_loop(). فشل التسجيل لا يمنع وصول الرد.
     """
-    doc_id = await asyncio.to_thread(
+    await asyncio.to_thread(
         create_feedback, user_id, "telegram", question, answer, latency_ms
     )
-    keyboard = None
-    if doc_id:
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(f"⭐ {i}", callback_data=f"fb:{doc_id}:{i}")
-            for i in range(1, 6)
-        ]])
-    await _reply_long(target, answer, reply_markup=keyboard)
+    await _reply_long(target, answer)
+
+
+async def feedback_prompt_loop(app):
+    """خيط دوري يرسل طلبات التقييم المستحقة للتليجرام (رسالة منفصلة بالنجوم)."""
+    while True:
+        await asyncio.sleep(PROMPT_SWEEP_SECONDS)
+        try:
+            prompts = await asyncio.to_thread(claim_due_prompts, "telegram")
+        except Exception:
+            logging.exception("feedback prompt sweep failed")
+            continue
+        for doc_id, chat_id in prompts:
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"⭐ {i}", callback_data=f"fb:{doc_id}:{i}")
+                for i in range(1, 6)
+            ]])
+            try:
+                await app.bot.send_message(
+                    chat_id,
+                    "⭐ لو كان الرد مفيداً، قيّمنا من 1 إلى 5:",
+                    reply_markup=keyboard,
+                )
+            except Exception:
+                logging.exception("feedback prompt send failed (chat=%s)", chat_id)
 
 
 async def handle_feedback_button(update, context):
@@ -1430,7 +1454,7 @@ async def handle_message(update, context):
                     break
             prompt = f"سؤال الطالب عن مادة «{course_name}»:\n{text}"
         answer = await generate_answer(prompt, chat_id, instructor_data=instructor, language=language)
-        await _reply_with_rating(
+        await _reply_tracked(
             update.message, chat_id, text, answer,
             latency_ms=int((time.time() - t0) * 1000),
         )
@@ -1453,7 +1477,7 @@ async def handle_voice(update, context):
             language = get_effective_language(str(update.effective_chat.id), text)
             voice_t0 = time.time()
             answer = await generate_answer(text, update.effective_chat.id, language=language)
-            await _reply_with_rating(
+            await _reply_tracked(
                 update.message, update.effective_chat.id, text, answer,
                 latency_ms=int((time.time() - voice_t0) * 1000),
             )

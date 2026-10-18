@@ -29,6 +29,7 @@ from telegram_bot.admin_panel import (
 from telegram_bot.handlers import (
     addcontent_conv,
     deletecontent_start,
+    feedback_prompt_loop,
     get_sheet,
     handle_ask_course,
     handle_back_my_courses,
@@ -73,8 +74,14 @@ async def _on_error(update, context):
         exc_info=(type(error), error, error.__traceback__),
     )
 
+def _post_init(app):
+    """يبدأ مجدول طلبات التقييم المؤجّلة (رسالة منفصلة بعد كل رد ذكاء اصطناعي)."""
+    app.create_task(feedback_prompt_loop(app))
+    logging.info("⏳ Feedback prompt scheduler started (sweep every 60s)")
+
+
 def main():
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).post_init(_post_init).build()
     app.add_error_handler(_on_error)
 
     # Handlers
