@@ -11,6 +11,7 @@ from google.genai import types
 
 from config import ADMIN_WHATSAPP_NUMBERS, MODEL_NAME
 from services.email_service import send_otp_email
+from services.feedback import create_feedback, rate_feedback
 from services.firebase_db import (
     clear_pending_upload,
     db,
@@ -725,7 +726,48 @@ async def handle_voice(phone, media_id):
 # Routing
 # ============================================================
 
+def _send_wa_answer(phone, question, answer, latency_ms=None):
+    """
+    يرسل رد الذكاء الاصطناعي ثم يطلب تقييمه بالنجوم.
+
+    التقييم يُسجَّل في Firestore ليغذّي إحصائيات لوحة تحكم المشرفين.
+    """
+    doc_id = create_feedback(phone, "whatsapp", question, answer, latency_ms)
+    send_text(phone, answer)
+    if doc_id:
+        send_list(
+            phone,
+            "قيّم هذا الرد بالنجوم ⭐",
+            [
+                (f"fb:{doc_id}:1", "⭐ 1", "ضعيف"),
+                (f"fb:{doc_id}:2", "⭐ 2", "مقبول"),
+                (f"fb:{doc_id}:3", "⭐ 3", "جيد"),
+                (f"fb:{doc_id}:4", "⭐ 4", "جيد جداً"),
+                (f"fb:{doc_id}:5", "⭐ 5", "ممتاز"),
+            ],
+            button_text="التقييم",
+        )
+
+
+async def _wa_handle_feedback(phone, payload):
+    """يختم تقييم النجوم (1-5) على المحادثة ويؤكد للمستخدم."""
+    try:
+        _, doc_id, number = payload.split(":", 2)
+        rating = int(number)
+    except (ValueError, AttributeError):
+        send_text(phone, "تعذر تسجيل التقييم، حاول مرة أخرى.")
+        return
+    ok = await asyncio.to_thread(rate_feedback, doc_id, rating, phone)
+    if ok:
+        send_text(phone, f"شكراً لك! تقييمك {rating} من 5 مسجّل ⭐")
+    else:
+        send_text(phone, "تم تسجيل تقييمك لهذه المحادثة مسبقاً ✅")
+
+
 async def handle_callback(phone, payload):
+    if payload.startswith("fb:"):
+        await _wa_handle_feedback(phone, payload)
+        return
     if payload.startswith("waadm:"):
         if await asyncio.to_thread(wa_admin_callback, phone, payload):
             return
@@ -804,6 +846,7 @@ async def handle_callback(phone, payload):
 
 
 async def route_text(phone, text, course_context=None):
+    t0 = time.time()
     lang_cmd = parse_language_toggle(text)
     if lang_cmd:
         if lang_cmd == "show":
@@ -926,7 +969,7 @@ async def route_text(phone, text, course_context=None):
     language = get_effective_language("wa:" + phone, text)
     prompt = text if not course_context else f"سؤال الطالب عن مادة «{course_context}»:\n{text}"
     answer = await generate_answer(prompt, "wa:" + phone, instructor_data=instructor, language=language)
-    send_text(phone, answer)
+    _send_wa_answer(phone, text, answer, latency_ms=int((time.time() - t0) * 1000))
 
 
 # ============================================================

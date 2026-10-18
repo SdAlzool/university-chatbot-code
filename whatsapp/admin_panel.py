@@ -3,6 +3,7 @@
 import logging
 
 from config import ADMIN_WHATSAPP_NUMBERS
+from services.feedback import format_stats
 from services.firebase_db import db
 from services.github_tools import slugify_course_name
 from telegram_bot.admin_panel import is_stored_admin
@@ -78,6 +79,7 @@ def wa_admin_menu(phone):
         f"👨‍🏫 الأساتذة: {instructors}\n"
         f"🛡️ المشرفين: {admins}\n"
         f"📚 المواد: {courses}\n\n"
+        f"{format_stats()}\n\n"
         "اختر القسم:",
         items,
         header="🛡️ لوحة الإدارة",

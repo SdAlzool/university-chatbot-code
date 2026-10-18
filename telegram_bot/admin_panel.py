@@ -9,6 +9,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from config import ADMIN_TELEGRAM_IDS, ADMIN_WHATSAPP_NUMBERS
+from services.feedback import format_stats
 from services.firebase_db import db
 from services.github_tools import list_repository_folders
 
@@ -74,6 +75,8 @@ async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     effective_course_count = len(course_docs)
     bootstrap_count = len(ADMIN_TELEGRAM_IDS)
     github_course_count = "غير متاح" if counts[4] is None else str(len(counts[4]))
+    # مؤشرات التقييمات وزمن الاستجابة — تُجلب في thread لأنها قراءة من Firestore
+    feedback_text = await asyncio.to_thread(format_stats)
     await update.effective_message.reply_text(
         "لوحة إدارة المشروع\n\n"
         f"الطلاب: {counts[0]}\n"
@@ -83,6 +86,7 @@ async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"مجلدات المقررات في GitHub: {github_course_count}\n"
         f"المشرفون المضافون: {counts[3]}\n"
         f"المشرفون الأساسيون (.env): {bootstrap_count}\n\n"
+        f"{feedback_text}\n\n"
         "─── أوامر عرض ───\n"
         "/students - عرض جميع الطلاب\n"
         "/instructors - عرض جميع الأساتذة\n"
@@ -520,12 +524,14 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ ليس لديك صلاحية الوصول لهذه اللوحة.")
         return
     students, instructors, admins, courses = await _get_stats()
+    feedback_text = await asyncio.to_thread(format_stats)
     text = (
         "🛡️ **لوحة إدارة النظام**\n\n"
         f"👥 الطلاب: {students}\n"
         f"👨‍🏫 الأساتذة: {instructors}\n"
         f"🛡️ المشرفين: {admins}\n"
         f"📚 المواد: {courses}\n\n"
+        f"{feedback_text}\n\n"
         "اختر القسم المطلوب:"
     )
     await update.message.reply_text(
@@ -606,12 +612,14 @@ async def _admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _show_home(query):
     students, instructors, admins, courses = await _get_stats()
+    feedback_text = await asyncio.to_thread(format_stats)
     text = (
         "🛡️ **لوحة إدارة النظام**\n\n"
         f"👥 الطلاب: {students}\n"
         f"👨‍🏫 الأساتذة: {instructors}\n"
         f"🛡️ المشرفين: {admins}\n"
         f"📚 المواد: {courses}\n\n"
+        f"{feedback_text}\n\n"
         "اختر القسم المطلوب:"
     )
     await query.edit_message_text(

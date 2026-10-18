@@ -20,6 +20,7 @@ from telegram.ext import (
 
 from config import MODEL_NAME
 from services.email_service import send_otp_email
+from services.feedback import create_feedback, rate_feedback
 from services.firebase_db import (
     db,
     get_instructor_by_chat_id,
@@ -218,16 +219,63 @@ async def handle_course_file_action(update, context):
         await _summarize_file(query.message, file)
 
 
-async def _reply_long(target, text):
+async def _reply_long(target, text, reply_markup=None):
     """
     يرد بنص قد يتجاوز حد تيليجرام (4096 حرفاً) بتقسيمه على عدة رسائل.
 
     كان النص يُقصّ عند 4000 حرف فيصل المستخدم بنص ناقص منتصف الجملة،
     وما كان الإرسال الأطول ينجح أصلاً لأن تيليجرام يرفضه.
+    لوحة الأزرار (إن وُجدت) تُرفق بأول مقطع.
     """
-    for part in chunk_text(text):
-        await target.reply_text(part)
-        await asyncio.sleep(0.3)
+    parts = chunk_text(text) or ["✅"]
+    for index, part in enumerate(parts):
+        if index:
+            await asyncio.sleep(0.3)
+        await target.reply_text(part, reply_markup=reply_markup if index == 0 else None)
+
+
+async def _reply_with_rating(target, user_id, question, answer, latency_ms=None):
+    """
+    يرسل الرد ثم يطلب تقييمه بالنجوم (Feedback Stars).
+
+    التقييم يُسجَّل في Firestore ثم يغذّي إحصائيات لوحة تحكم المشرفين
+    (متوسط التقييم، المحادثات الناجحة، متوسط زمن الاستجابة).
+    """
+    doc_id = await asyncio.to_thread(
+        create_feedback, user_id, "telegram", question, answer, latency_ms
+    )
+    keyboard = None
+    if doc_id:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"⭐ {i}", callback_data=f"fb:{doc_id}:{i}")
+            for i in range(1, 6)
+        ]])
+    await _reply_long(target, answer, reply_markup=keyboard)
+
+
+async def handle_feedback_button(update, context):
+    """يستقبل تقييم النجوم (1-5) ويختتمه على المحادثة."""
+    query = update.callback_query
+    try:
+        _, doc_id, number = query.data.split(":", 2)
+        rating = int(number)
+        chat_id = str(query.message.chat_id) if query.message else ""
+        ok = await asyncio.to_thread(rate_feedback, doc_id, rating, chat_id or None)
+        if ok:
+            await query.answer(f"شكراً! تقييمك {rating} من 5 مسجّل ⭐")
+        else:
+            await query.answer("تم تسجيل تقييمك لهذه المحادثة مسبقاً ✅")
+    except Exception:
+        logging.exception("feedback button failed")
+        try:
+            await query.answer("تعذر تسجيل التقييم، حاول مرة أخرى.")
+        except Exception:
+            pass
+        return
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
 
 
 async def _translate_file(target, file):
@@ -1381,7 +1429,11 @@ async def handle_message(update, context):
                     course_name = c.get("name") or question_course
                     break
             prompt = f"سؤال الطالب عن مادة «{course_name}»:\n{text}"
-        await update.message.reply_text(await generate_answer(prompt, chat_id, instructor_data=instructor, language=language))
+        answer = await generate_answer(prompt, chat_id, instructor_data=instructor, language=language)
+        await _reply_with_rating(
+            update.message, chat_id, text, answer,
+            latency_ms=int((time.time() - t0) * 1000),
+        )
         logging.info(f"[TIMING] FULL reply (intent {time.time()-t0:.2f}s total) — note this includes intent-detection ({time.time()-(t0+0)}s since start)")
 
 
@@ -1399,7 +1451,12 @@ async def handle_voice(update, context):
         text = response.text.strip()
         if text:
             language = get_effective_language(str(update.effective_chat.id), text)
-            await update.message.reply_text(await generate_answer(text, update.effective_chat.id, language=language))
+            voice_t0 = time.time()
+            answer = await generate_answer(text, update.effective_chat.id, language=language)
+            await _reply_with_rating(
+                update.message, update.effective_chat.id, text, answer,
+                latency_ms=int((time.time() - voice_t0) * 1000),
+            )
     except Exception:
         logging.exception("Voice processing failed")
         await update.message.reply_text("تعذرت معالجة الرسالة الصوتية.")

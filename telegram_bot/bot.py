@@ -40,6 +40,7 @@ from telegram_bot.handlers import (
     handle_delwhole_confirm,
     handle_delwhole_select,
     handle_document,
+    handle_feedback_button,
     handle_file_action,
     handle_file_button,
     handle_instructor_callback,
@@ -116,6 +117,7 @@ def main():
     # Callback Queries
     app.add_handler(CallbackQueryHandler(handle_welcome_buttons, pattern="^btn_guest_mode$"))
     app.add_handler(CallbackQueryHandler(_admin_callback, pattern=r"^ap:"))
+    app.add_handler(CallbackQueryHandler(handle_feedback_button, pattern=r"^fb:"))
     app.add_handler(CallbackQueryHandler(handle_student_callback, pattern="^student:"))
     app.add_handler(CallbackQueryHandler(handle_instructor_callback, pattern="^instructor:"))
     app.add_handler(CallbackQueryHandler(handle_ask_course, pattern="^askcourse:"))
