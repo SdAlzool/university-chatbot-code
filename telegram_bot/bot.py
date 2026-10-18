@@ -11,6 +11,7 @@ warnings.filterwarnings(
 )
 
 from config import TOKEN
+from services.feedback import PROMPT_DELAY_SECONDS, PROMPT_SWEEP_SECONDS
 from telegram_bot.admin_panel import (
     _admin_callback,
     add_admin,
@@ -87,7 +88,8 @@ async def _post_init(app):
     فدالة عادية تُنفَّذ برّا الـloop وتسقط create_task بـ "no running event loop".
     """
     app.create_task(feedback_prompt_loop(app))
-    logging.info("⏳ Feedback prompt scheduler started (sweep every 60s)")
+    logging.info("⏳ Feedback prompt scheduler started (sweep every %ss, prompt after %ss)",
+                 PROMPT_SWEEP_SECONDS, PROMPT_DELAY_SECONDS)
 
 
 def main():

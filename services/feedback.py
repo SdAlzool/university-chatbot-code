@@ -21,10 +21,10 @@ MAX_ANSWER_CHARS = 600
 
 # سياسة رسالة التقييم المؤجّلة: يُطلب التقييم في رسالة منفصلة بعد الرد
 # مباشرةً بدل أزرار تحته، وبحد أقصى مرة واحدة كل24 ساعة لكل مستخدم.
-PROMPT_DELAY_SECONDS = 5 * 60        # التأخير قبل طلب التقييم (5 دقائق)
+PROMPT_DELAY_SECONDS = 60          # التأخير قبل طلب التقييم (دقيقة واحدة)
 PROMPT_COOLDOWN_SECONDS = 24 * 3600  # لا تكرار الطلب لنفس المستخدم/القناة
 PROMPT_EXPIRE_SECONDS = 24 * 3600    # إلغاء أي طلب تجاوز24 ساعة دون إرسال
-PROMPT_SWEEP_SECONDS = 60            # دورة فحص المستحقات (ثانية)
+PROMPT_SWEEP_SECONDS = 30            # دورة فحص المستحقات (ثانية)
 
 
 def _utcnow():
@@ -133,7 +133,7 @@ def claim_due_prompts(channel, limit=25):
     """يختار طلبات التقييم المستحقة للإرسال ويعيد [(doc_id, target)].
 
     السياسة:
-     - كل رد مسجّل يصبح مستحقاً بعد PROMPT_DELAY_SECONDS (5 دقائق).
+     - كل رد مسجّل يصبح مستحقاً بعد PROMPT_DELAY_SECONDS (دقيقة).
      - لكل مستخدم/قناة طلب واحد فقط: يُختار أحدث الردود المستحقة،
        وما سواه يُلغى (superseded).
      - لا تكرار قبل مضيّ PROMPT_COOLDOWN_SECONDS (24 ساعة).
@@ -181,6 +181,23 @@ def claim_due_prompts(channel, limit=25):
             continue
         result.append((latest_ref.id, target))
     return result
+
+
+def thanks_message(rating):
+    """نص رسالة الشكر بعد تسجيل التقييم (نص موحّد للتلجرام والواتساب)."""
+    try:
+        rating = max(1, min(5, int(rating)))
+    except (TypeError, ValueError):
+        rating = 0
+    if rating >= 4:
+        return (
+            f"شكراً لك! تقييمك ⭐{rating} من 5 مسجّل — "
+            "يساعدنا في استمرار تحسين ردود البوت 🙏"
+        )
+    return (
+        f"شكراً لك! تقييمك ⭐{rating} من 5 مسجّل — "
+        "سنعمل على تحسين جودة الردود 💪"
+    )
 
 
 def feedback_stats():

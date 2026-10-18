@@ -239,6 +239,7 @@ def main():
     ).start()
 
     # Feedback prompt scheduler (WhatsApp) — طلبات التقييم المؤجّلة
+    from services.feedback import PROMPT_DELAY_SECONDS, PROMPT_SWEEP_SECONDS
     from whatsapp.handlers import wa_feedback_prompt_loop
 
     threading.Thread(
@@ -247,7 +248,8 @@ def main():
         name="wa-feedback",
         daemon=True,
     ).start()
-    logging.info("⏳ WA feedback prompt scheduler started (sweep every 60s)")
+    logging.info("⏳ WA feedback prompt scheduler started (sweep every %ss, prompt after %ss)",
+                 PROMPT_SWEEP_SECONDS, PROMPT_DELAY_SECONDS)
 
     # Telegram runs in the main thread — مع إعادة محاولة عند أي توقف.
     # (لو انتهى run_polling أو رمي خطأ، لا نخرج من main وإلا صارت العملية

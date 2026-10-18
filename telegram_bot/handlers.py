@@ -25,6 +25,7 @@ from services.feedback import (
     claim_due_prompts,
     create_feedback,
     rate_feedback,
+    thanks_message,
 )
 from services.firebase_db import (
     db,
@@ -286,7 +287,12 @@ async def handle_feedback_button(update, context):
         chat_id = str(query.message.chat_id) if query.message else ""
         ok = await asyncio.to_thread(rate_feedback, doc_id, rating, chat_id or None)
         if ok:
-            await query.answer(f"شكراً! تقييمك {rating} من 5 مسجّل ⭐")
+            await query.answer("تم تسجيل تقييمك ⭐")
+            if query.message:
+                try:
+                    await query.message.reply_text(thanks_message(rating))
+                except Exception:
+                    logging.exception("feedback thanks message failed")
         else:
             await query.answer("تم تسجيل تقييمك لهذه المحادثة مسبقاً ✅")
     except Exception:

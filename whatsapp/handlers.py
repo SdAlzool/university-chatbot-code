@@ -16,6 +16,7 @@ from services.feedback import (
     claim_due_prompts,
     create_feedback,
     rate_feedback,
+    thanks_message,
 )
 from services.firebase_db import (
     clear_pending_upload,
@@ -780,7 +781,7 @@ async def _wa_handle_feedback(phone, payload):
         return
     ok = await asyncio.to_thread(rate_feedback, doc_id, rating, phone)
     if ok:
-        send_text(phone, f"شكراً لك! تقييمك {rating} من 5 مسجّل ⭐")
+        send_text(phone, thanks_message(rating))
     else:
         send_text(phone, "تم تسجيل تقييمك لهذه المحادثة مسبقاً ✅")
 
