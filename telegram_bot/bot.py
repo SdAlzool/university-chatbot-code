@@ -162,7 +162,10 @@ def main():
     except Exception as e:
         print(f"Webhook delete failed: {e}")
     
-    app.run_polling(timeout=30)
+    # bootstrap_retries=-1: إعادة محاولة getUpdates بلا نهاية عند تعذّر
+    # الاتصال وقت الإقلاع (شائع لحظة الـdeploy على Render). القيمة الافتراضية0
+    # كانت تستسلم فوراً وتُنهي العملية كلها.
+    app.run_polling(timeout=30, bootstrap_retries=-1)
 
 if __name__ == "__main__":
     main()

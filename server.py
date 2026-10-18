@@ -227,13 +227,14 @@ def main():
     except Exception as e:
         logging.warning("KB preload failed: %s", e)
 
-    # WhatsApp webhook — نبدأه أولاً حتى يبقى سيرفر الـHTTP شغّالاً
-    # (مهم على Render حتى لا يفشل health check لو تعذّر تشغيل تيليجرام).
+    # WhatsApp webhook — نبدأه أولاً حتى يبقى سيرفر الـHTTP شغّالاً.
+    # daemon=True كي لا تُبقي العملية "ميتة" (healthz يعمل والتليجرام ميّت)
+    # بعد خروج main — حلقة إعادة محاولة تليجرام أدناه تضمن بقاء الخدمات.
     threading.Thread(
         target=_run_thread,
         args=(run_whatsapp_server, "whatsapp"),
         name="whatsapp",
-        daemon=False,
+        daemon=True,
     ).start()
 
     # Feedback prompt scheduler (WhatsApp) — طلبات التقييم المؤجّلة
@@ -247,12 +248,17 @@ def main():
     ).start()
     logging.info("⏳ WA feedback prompt scheduler started (sweep every 60s)")
 
-    # Telegram runs in the main thread
-    try:
-        from telegram_bot.bot import main as run_telegram
-        run_telegram()
-    except Exception:
-        logging.exception("telegram crashed")
+    # Telegram runs in the main thread — مع إعادة محاولة عند أي توقف.
+    # (لو انتهى run_polling أو رمي خطأ، لا نخرج من main وإلا صارت العملية
+    #  "ميتة": healthz يردّ والبوت ميّت وردود الواتساب متعطّلة.)
+    while True:
+        try:
+            from telegram_bot.bot import main as run_telegram
+            run_telegram()
+            logging.error("telegram run_polling returned — restarting in 15s")
+        except Exception:
+            logging.exception("telegram crashed — restarting in 15s")
+        time.sleep(15)
 
 
 if __name__ == "__main__":
